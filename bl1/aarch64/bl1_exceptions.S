@@ -1,13 +1,13 @@
 /*
- * Copyright (c) 2013-2016, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <arch.h>
 #include <asm_macros.S>
-#include <bl1.h>
-#include <bl_common.h>
+#include <bl1/bl1.h>
+#include <common/bl_common.h>
 #include <context.h>
 
 /* -----------------------------------------------------------------------------
@@ -26,25 +26,25 @@ vector_entry SynchronousExceptionSP0
 	mov	x0, #SYNC_EXCEPTION_SP_EL0
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SynchronousExceptionSP0
+end_vector_entry SynchronousExceptionSP0
 
 vector_entry IrqSP0
 	mov	x0, #IRQ_SP_EL0
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size IrqSP0
+end_vector_entry IrqSP0
 
 vector_entry FiqSP0
 	mov	x0, #FIQ_SP_EL0
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size FiqSP0
+end_vector_entry FiqSP0
 
 vector_entry SErrorSP0
 	mov	x0, #SERROR_SP_EL0
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SErrorSP0
+end_vector_entry SErrorSP0
 
 	/* -----------------------------------------------------
 	 * Current EL with SPx: 0x200 - 0x400
@@ -54,25 +54,25 @@ vector_entry SynchronousExceptionSPx
 	mov	x0, #SYNC_EXCEPTION_SP_ELX
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SynchronousExceptionSPx
+end_vector_entry SynchronousExceptionSPx
 
 vector_entry IrqSPx
 	mov	x0, #IRQ_SP_ELX
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size IrqSPx
+end_vector_entry IrqSPx
 
 vector_entry FiqSPx
 	mov	x0, #FIQ_SP_ELX
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size FiqSPx
+end_vector_entry FiqSPx
 
 vector_entry SErrorSPx
 	mov	x0, #SERROR_SP_ELX
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SErrorSPx
+end_vector_entry SErrorSPx
 
 	/* -----------------------------------------------------
 	 * Lower EL using AArch64 : 0x400 - 0x600
@@ -91,25 +91,25 @@ vector_entry SynchronousExceptionA64
 	b.ne	unexpected_sync_exception
 
 	b	smc_handler64
-	check_vector_size SynchronousExceptionA64
+end_vector_entry SynchronousExceptionA64
 
 vector_entry IrqA64
 	mov	x0, #IRQ_AARCH64
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size IrqA64
+end_vector_entry IrqA64
 
 vector_entry FiqA64
 	mov	x0, #FIQ_AARCH64
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size FiqA64
+end_vector_entry FiqA64
 
 vector_entry SErrorA64
 	mov	x0, #SERROR_AARCH64
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SErrorA64
+end_vector_entry SErrorA64
 
 	/* -----------------------------------------------------
 	 * Lower EL using AArch32 : 0x600 - 0x800
@@ -119,25 +119,25 @@ vector_entry SynchronousExceptionA32
 	mov	x0, #SYNC_EXCEPTION_AARCH32
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SynchronousExceptionA32
+end_vector_entry SynchronousExceptionA32
 
 vector_entry IrqA32
 	mov	x0, #IRQ_AARCH32
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size IrqA32
+end_vector_entry IrqA32
 
 vector_entry FiqA32
 	mov	x0, #FIQ_AARCH32
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size FiqA32
+end_vector_entry FiqA32
 
 vector_entry SErrorA32
 	mov	x0, #SERROR_AARCH32
 	bl	plat_report_exception
 	no_ret	plat_panic_handler
-	check_vector_size SErrorA32
+end_vector_entry SErrorA32
 
 
 func smc_handler64
@@ -164,7 +164,7 @@ func smc_handler64
 	 * ----------------------------------------------
 	 */
 	ldr	x30, [sp, #CTX_EL3STATE_OFFSET + CTX_RUNTIME_SP]
-	msr	spsel, #0
+	msr	spsel, #MODE_SP_EL0
 	mov	sp, x30
 
 	/* ---------------------------------------------------------------------
@@ -187,6 +187,7 @@ func smc_handler64
 
 	bl	disable_mmu_icache_el3
 	tlbi	alle3
+	dsb	ish /* ERET implies ISB, so it is not needed here */
 
 #if SPIN_ON_BL1_EXIT
 	bl	print_debug_loop_message
@@ -201,7 +202,7 @@ debug_loop:
 	ldp	x4, x5, [x20, #(ENTRY_POINT_INFO_ARGS_OFFSET + 0x20)]
 	ldp	x2, x3, [x20, #(ENTRY_POINT_INFO_ARGS_OFFSET + 0x10)]
 	ldp	x0, x1, [x20, #(ENTRY_POINT_INFO_ARGS_OFFSET + 0x0)]
-	eret
+	exception_return
 endfunc smc_handler64
 
 unexpected_sync_exception:
@@ -216,12 +217,24 @@ unexpected_sync_exception:
 	 */
 smc_handler:
 	/* -----------------------------------------------------
-	 * Save the GP registers x0-x29.
-	 * TODO: Revisit to store only SMCC specified registers.
+	 * Save x0-x29 and ARMv8.3-PAuth (if enabled) registers.
+	 * If Secure Cycle Counter is not disabled in MDCR_EL3
+	 * when ARMv8.5-PMU is implemented, save PMCR_EL0 and
+	 * disable Cycle Counter.
+	 * TODO: Revisit to store only SMCCC specified registers.
 	 * -----------------------------------------------------
 	 */
-	bl	save_gp_registers
+	bl	save_gp_pmcr_pauth_regs
 
+#if ENABLE_PAUTH
+	/* -----------------------------------------------------
+	 * Load and program stored APIAKey firmware key.
+	 * Re-enable pointer authentication in EL3, as it was
+	 * disabled before jumping to the next boot image.
+	 * -----------------------------------------------------
+	 */
+	bl	pauth_load_bl1_apiakey_enable
+#endif
 	/* -----------------------------------------------------
 	 * Populate the parameters for the SMC handler. We
 	 * already have x0-x4 in place. x5 will point to a
@@ -246,7 +259,7 @@ smc_handler:
 	 * Switch back to SP_EL0 for the C runtime stack.
 	 * ---------------------------------------------
 	 */
-	msr	spsel, #0
+	msr	spsel, #MODE_SP_EL0
 	mov	sp, x12
 
 	/* -----------------------------------------------------

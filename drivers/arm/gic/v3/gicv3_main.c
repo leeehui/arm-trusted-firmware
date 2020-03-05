@@ -1,27 +1,28 @@
 /*
- * Copyright (c) 2015-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <assert.h>
+
 #include <arch.h>
 #include <arch_helpers.h>
-#include <assert.h>
-#include <debug.h>
-#include <gicv3.h>
-#include <interrupt_props.h>
-#include <spinlock.h>
+#include <common/debug.h>
+#include <common/interrupt_props.h>
+#include <drivers/arm/gicv3.h>
+#include <lib/spinlock.h>
+
 #include "gicv3_private.h"
 
 const gicv3_driver_data_t *gicv3_driver_data;
-static unsigned int gicv2_compat;
 
 /*
  * Spinlock to guard registers needing read-modify-write. APIs protected by this
  * spinlock are used either at boot time (when only a single CPU is active), or
  * when the system is fully coherent.
  */
-spinlock_t gic_lock;
+static spinlock_t gic_lock;
 
 /*
  * Redistributor power operations are weakly bound so that they can be
@@ -34,100 +35,85 @@ spinlock_t gic_lock;
 /* Helper macros to save and restore GICD registers to and from the context */
 #define RESTORE_GICD_REGS(base, ctx, intr_num, reg, REG)		\
 	do {								\
-		for (unsigned int int_id = MIN_SPI_ID; int_id < intr_num; \
-				int_id += (1 << REG##_SHIFT)) {		\
+		for (unsigned int int_id = MIN_SPI_ID; int_id < (intr_num); \
+				int_id += (1U << REG##_SHIFT)) {	\
 			gicd_write_##reg(base, int_id,			\
 				ctx->gicd_##reg[(int_id - MIN_SPI_ID) >> REG##_SHIFT]); \
 		}							\
-	} while (0)
+	} while (false)
 
 #define SAVE_GICD_REGS(base, ctx, intr_num, reg, REG)			\
 	do {								\
-		for (unsigned int int_id = MIN_SPI_ID; int_id < intr_num; \
-				int_id += (1 << REG##_SHIFT)) {		\
+		for (unsigned int int_id = MIN_SPI_ID; int_id < (intr_num); \
+				int_id += (1U << REG##_SHIFT)) {	\
 			ctx->gicd_##reg[(int_id - MIN_SPI_ID) >> REG##_SHIFT] =\
 					gicd_read_##reg(base, int_id);	\
 		}							\
-	} while (0)
+	} while (false)
 
 
 /*******************************************************************************
  * This function initialises the ARM GICv3 driver in EL3 with provided platform
  * inputs.
  ******************************************************************************/
-void gicv3_driver_init(const gicv3_driver_data_t *plat_driver_data)
+void __init gicv3_driver_init(const gicv3_driver_data_t *plat_driver_data)
 {
 	unsigned int gic_version;
+	unsigned int gicv2_compat;
 
-	assert(plat_driver_data);
-	assert(plat_driver_data->gicd_base);
-	assert(plat_driver_data->gicr_base);
-	assert(plat_driver_data->rdistif_num);
-	assert(plat_driver_data->rdistif_base_addrs);
+	assert(plat_driver_data != NULL);
+	assert(plat_driver_data->gicd_base != 0U);
+	assert(plat_driver_data->rdistif_num != 0U);
+	assert(plat_driver_data->rdistif_base_addrs != NULL);
 
 	assert(IS_IN_EL3());
 
-#if !ERROR_DEPRECATED
-	if (plat_driver_data->interrupt_props == NULL) {
-		/* Interrupt properties array size must be 0 */
-		assert(plat_driver_data->interrupt_props_num == 0);
-
-		/*
-		 * The platform should provide a list of at least one type of
-		 * interrupt.
-		 */
-		assert(plat_driver_data->g0_interrupt_array ||
-				plat_driver_data->g1s_interrupt_array);
-
-		/*
-		 * If there are no interrupts of a particular type, then the
-		 * number of interrupts of that type should be 0 and vice-versa.
-		 */
-		assert(plat_driver_data->g0_interrupt_array ?
-				plat_driver_data->g0_interrupt_num :
-				plat_driver_data->g0_interrupt_num == 0);
-		assert(plat_driver_data->g1s_interrupt_array ?
-				plat_driver_data->g1s_interrupt_num :
-				plat_driver_data->g1s_interrupt_num == 0);
-	}
-#else
-	assert(plat_driver_data->interrupt_props != NULL);
-	assert(plat_driver_data->interrupt_props_num > 0);
-#endif
+	assert((plat_driver_data->interrupt_props_num != 0U) ?
+	       (plat_driver_data->interrupt_props != NULL) : 1);
 
 	/* Check for system register support */
-#ifdef AARCH32
-	assert(read_id_pfr1() & (ID_PFR1_GIC_MASK << ID_PFR1_GIC_SHIFT));
+#ifndef __aarch64__
+	assert((read_id_pfr1() &
+			(ID_PFR1_GIC_MASK << ID_PFR1_GIC_SHIFT)) != 0U);
 #else
-	assert(read_id_aa64pfr0_el1() &
-			(ID_AA64PFR0_GIC_MASK << ID_AA64PFR0_GIC_SHIFT));
-#endif /* AARCH32 */
+	assert((read_id_aa64pfr0_el1() &
+			(ID_AA64PFR0_GIC_MASK << ID_AA64PFR0_GIC_SHIFT)) != 0U);
+#endif /* !__aarch64__ */
 
 	/* The GIC version should be 3.0 */
 	gic_version = gicd_read_pidr2(plat_driver_data->gicd_base);
-	gic_version >>=	PIDR2_ARCH_REV_SHIFT;
+	gic_version >>= PIDR2_ARCH_REV_SHIFT;
 	gic_version &= PIDR2_ARCH_REV_MASK;
 	assert(gic_version == ARCH_REV_GICV3);
 
 	/*
-	 * Find out whether the GIC supports the GICv2 compatibility mode. The
-	 * ARE_S bit resets to 0 if supported
+	 * Find out whether the GIC supports the GICv2 compatibility mode.
+	 * The ARE_S bit resets to 0 if supported
 	 */
 	gicv2_compat = gicd_read_ctlr(plat_driver_data->gicd_base);
 	gicv2_compat >>= CTLR_ARE_S_SHIFT;
-	gicv2_compat = !(gicv2_compat & CTLR_ARE_S_MASK);
+	gicv2_compat = gicv2_compat & CTLR_ARE_S_MASK;
 
-	/*
-	 * Find the base address of each implemented Redistributor interface.
-	 * The number of interfaces should be equal to the number of CPUs in the
-	 * system. The memory for saving these addresses has to be allocated by
-	 * the platform port
-	 */
-	gicv3_rdistif_base_addrs_probe(plat_driver_data->rdistif_base_addrs,
-					   plat_driver_data->rdistif_num,
-					   plat_driver_data->gicr_base,
-					   plat_driver_data->mpidr_to_core_pos);
-
+	if (plat_driver_data->gicr_base != 0U) {
+		/*
+		 * Find the base address of each implemented Redistributor interface.
+		 * The number of interfaces should be equal to the number of CPUs in the
+		 * system. The memory for saving these addresses has to be allocated by
+		 * the platform port
+		 */
+		gicv3_rdistif_base_addrs_probe(plat_driver_data->rdistif_base_addrs,
+						   plat_driver_data->rdistif_num,
+						   plat_driver_data->gicr_base,
+						   plat_driver_data->mpidr_to_core_pos);
+#if !HW_ASSISTED_COHERENCY
+		/*
+		 * Flush the rdistif_base_addrs[] contents linked to the GICv3 driver.
+		 */
+		flush_dcache_range((uintptr_t)(plat_driver_data->rdistif_base_addrs),
+			plat_driver_data->rdistif_num *
+			sizeof(*(plat_driver_data->rdistif_base_addrs)));
+#endif
+	}
 	gicv3_driver_data = plat_driver_data;
 
 	/*
@@ -138,27 +124,28 @@ void gicv3_driver_init(const gicv3_driver_data_t *plat_driver_data)
 	 * platform has HW_ASSISTED_COHERENCY enabled.
 	 */
 #if !HW_ASSISTED_COHERENCY
-	flush_dcache_range((uintptr_t) &gicv3_driver_data,
-			sizeof(gicv3_driver_data));
-	flush_dcache_range((uintptr_t) gicv3_driver_data,
-			sizeof(*gicv3_driver_data));
+	flush_dcache_range((uintptr_t)&gicv3_driver_data,
+		sizeof(gicv3_driver_data));
+	flush_dcache_range((uintptr_t)gicv3_driver_data,
+		sizeof(*gicv3_driver_data));
 #endif
 
-	INFO("GICv3 %s legacy support detected."
-			" ARM GICV3 driver initialized in EL3\n",
-			gicv2_compat ? "with" : "without");
+	INFO("GICv3 with%s legacy support detected."
+			" ARM GICv3 driver initialized in EL3\n",
+			(gicv2_compat == 0U) ? "" : "out");
+
 }
 
 /*******************************************************************************
  * This function initialises the GIC distributor interface based upon the data
  * provided by the platform while initialising the driver.
  ******************************************************************************/
-void gicv3_distif_init(void)
+void __init gicv3_distif_init(void)
 {
 	unsigned int bitmap = 0;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 
 	assert(IS_IN_EL3());
 
@@ -178,39 +165,12 @@ void gicv3_distif_init(void)
 			CTLR_ARE_S_BIT | CTLR_ARE_NS_BIT, RWP_TRUE);
 
 	/* Set the default attribute of all SPIs */
-	gicv3_spis_configure_defaults(gicv3_driver_data->gicd_base);
+	gicv3_spis_config_defaults(gicv3_driver_data->gicd_base);
 
-#if !ERROR_DEPRECATED
-	if (gicv3_driver_data->interrupt_props != NULL) {
-#endif
-		bitmap = gicv3_secure_spis_configure_props(
-				gicv3_driver_data->gicd_base,
-				gicv3_driver_data->interrupt_props,
-				gicv3_driver_data->interrupt_props_num);
-#if !ERROR_DEPRECATED
-	} else {
-		assert(gicv3_driver_data->g1s_interrupt_array ||
-				gicv3_driver_data->g0_interrupt_array);
-
-		/* Configure the G1S SPIs */
-		if (gicv3_driver_data->g1s_interrupt_array) {
-			gicv3_secure_spis_configure(gicv3_driver_data->gicd_base,
-					gicv3_driver_data->g1s_interrupt_num,
-					gicv3_driver_data->g1s_interrupt_array,
-					INTR_GROUP1S);
-			bitmap |= CTLR_ENABLE_G1S_BIT;
-		}
-
-		/* Configure the G0 SPIs */
-		if (gicv3_driver_data->g0_interrupt_array) {
-			gicv3_secure_spis_configure(gicv3_driver_data->gicd_base,
-					gicv3_driver_data->g0_interrupt_num,
-					gicv3_driver_data->g0_interrupt_array,
-					INTR_GROUP0);
-			bitmap |= CTLR_ENABLE_G0_BIT;
-		}
-	}
-#endif
+	bitmap = gicv3_secure_spis_config_props(
+			gicv3_driver_data->gicd_base,
+			gicv3_driver_data->interrupt_props,
+			gicv3_driver_data->interrupt_props_num);
 
 	/* Enable the secure SPIs now that they have been configured */
 	gicd_set_ctlr(gicv3_driver_data->gicd_base, bitmap, RWP_TRUE);
@@ -224,16 +184,16 @@ void gicv3_distif_init(void)
 void gicv3_rdistif_init(unsigned int proc_num)
 {
 	uintptr_t gicr_base;
-	unsigned int bitmap = 0;
+	unsigned int bitmap = 0U;
 	uint32_t ctlr;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 
 	ctlr = gicd_read_ctlr(gicv3_driver_data->gicd_base);
-	assert(ctlr & CTLR_ARE_S_BIT);
+	assert((ctlr & CTLR_ARE_S_BIT) != 0U);
 
 	assert(IS_IN_EL3());
 
@@ -241,40 +201,14 @@ void gicv3_rdistif_init(unsigned int proc_num)
 	gicv3_rdistif_on(proc_num);
 
 	gicr_base = gicv3_driver_data->rdistif_base_addrs[proc_num];
+	assert(gicr_base != 0U);
 
 	/* Set the default attribute of all SGIs and PPIs */
-	gicv3_ppi_sgi_configure_defaults(gicr_base);
+	gicv3_ppi_sgi_config_defaults(gicr_base);
 
-#if !ERROR_DEPRECATED
-	if (gicv3_driver_data->interrupt_props != NULL) {
-#endif
-		bitmap = gicv3_secure_ppi_sgi_configure_props(gicr_base,
-				gicv3_driver_data->interrupt_props,
-				gicv3_driver_data->interrupt_props_num);
-#if !ERROR_DEPRECATED
-	} else {
-		assert(gicv3_driver_data->g1s_interrupt_array ||
-		       gicv3_driver_data->g0_interrupt_array);
-
-		/* Configure the G1S SGIs/PPIs */
-		if (gicv3_driver_data->g1s_interrupt_array) {
-			gicv3_secure_ppi_sgi_configure(gicr_base,
-					gicv3_driver_data->g1s_interrupt_num,
-					gicv3_driver_data->g1s_interrupt_array,
-					INTR_GROUP1S);
-			bitmap |= CTLR_ENABLE_G1S_BIT;
-		}
-
-		/* Configure the G0 SGIs/PPIs */
-		if (gicv3_driver_data->g0_interrupt_array) {
-			gicv3_secure_ppi_sgi_configure(gicr_base,
-					gicv3_driver_data->g0_interrupt_num,
-					gicv3_driver_data->g0_interrupt_array,
-					INTR_GROUP0);
-			bitmap |= CTLR_ENABLE_G0_BIT;
-		}
-	}
-#endif
+	bitmap = gicv3_secure_ppi_sgi_config_props(gicr_base,
+			gicv3_driver_data->interrupt_props,
+			gicv3_driver_data->interrupt_props_num);
 
 	/* Enable interrupt groups as required, if not already */
 	if ((ctlr & bitmap) != bitmap)
@@ -301,12 +235,12 @@ void gicv3_rdistif_on(unsigned int proc_num)
 void gicv3_cpuif_enable(unsigned int proc_num)
 {
 	uintptr_t gicr_base;
-	unsigned int scr_el3;
+	u_register_t scr_el3;
 	unsigned int icc_sre_el3;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(IS_IN_EL3());
 
 	/* Mark the connected core as awake */
@@ -341,6 +275,10 @@ void gicv3_cpuif_enable(unsigned int proc_num)
 	write_scr_el3(scr_el3 & (~SCR_NS_BIT));
 	isb();
 
+	/* Write the secure ICC_SRE_EL1 register */
+	write_icc_sre_el1(ICC_SRE_SRE_BIT);
+	isb();
+
 	/* Program the idle priority in the PMR */
 	write_icc_pmr_el1(GIC_PRI_MASK);
 
@@ -350,9 +288,6 @@ void gicv3_cpuif_enable(unsigned int proc_num)
 	/* Enable Group1 Secure interrupts */
 	write_icc_igrpen1_el3(read_icc_igrpen1_el3() |
 				IGRPEN1_EL3_ENABLE_G1S_BIT);
-
-	/* Write the secure ICC_SRE_EL1 register */
-	write_icc_sre_el1(ICC_SRE_SRE_BIT);
 	isb();
 }
 
@@ -364,9 +299,9 @@ void gicv3_cpuif_disable(unsigned int proc_num)
 {
 	uintptr_t gicr_base;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 
 	assert(IS_IN_EL3());
 
@@ -388,6 +323,7 @@ void gicv3_cpuif_disable(unsigned int proc_num)
 
 	/* Mark the connected core as asleep */
 	gicr_base = gicv3_driver_data->rdistif_base_addrs[proc_num];
+	assert(gicr_base != 0U);
 	gicv3_rdistif_mark_core_asleep(gicr_base);
 }
 
@@ -400,14 +336,14 @@ unsigned int gicv3_get_pending_interrupt_id(void)
 	unsigned int id;
 
 	assert(IS_IN_EL3());
-	id = read_icc_hppir0_el1() & HPPIR0_EL1_INTID_MASK;
+	id = (uint32_t)read_icc_hppir0_el1() & HPPIR0_EL1_INTID_MASK;
 
 	/*
 	 * If the ID is special identifier corresponding to G1S or G1NS
 	 * interrupt, then read the highest pending group 1 interrupt.
 	 */
 	if ((id == PENDING_G1S_INTID) || (id == PENDING_G1NS_INTID))
-		return read_icc_hppir1_el1() & HPPIR1_EL1_INTID_MASK;
+		return (uint32_t)read_icc_hppir1_el1() & HPPIR1_EL1_INTID_MASK;
 
 	return id;
 }
@@ -424,7 +360,7 @@ unsigned int gicv3_get_pending_interrupt_id(void)
 unsigned int gicv3_get_pending_interrupt_type(void)
 {
 	assert(IS_IN_EL3());
-	return read_icc_hppir0_el1() & HPPIR0_EL1_INTID_MASK;
+	return (uint32_t)read_icc_hppir0_el1() & HPPIR0_EL1_INTID_MASK;
 }
 
 /*******************************************************************************
@@ -444,10 +380,10 @@ unsigned int gicv3_get_interrupt_type(unsigned int id,
 	uintptr_t gicr_base;
 
 	assert(IS_IN_EL3());
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 
 	/* Ensure the parameters are valid */
-	assert(id < PENDING_G1S_INTID || id >= MIN_LPI_ID);
+	assert((id < PENDING_G1S_INTID) || (id >= MIN_LPI_ID));
 	assert(proc_num < gicv3_driver_data->rdistif_num);
 
 	/* All LPI interrupts are Group 1 non secure */
@@ -455,12 +391,12 @@ unsigned int gicv3_get_interrupt_type(unsigned int id,
 		return INTR_GROUP1NS;
 
 	if (id < MIN_SPI_ID) {
-		assert(gicv3_driver_data->rdistif_base_addrs);
+		assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 		gicr_base = gicv3_driver_data->rdistif_base_addrs[proc_num];
 		igroup = gicr_get_igroupr0(gicr_base, id);
 		grpmodr = gicr_get_igrpmodr0(gicr_base, id);
 	} else {
-		assert(gicv3_driver_data->gicd_base);
+		assert(gicv3_driver_data->gicd_base != 0U);
 		igroup = gicd_get_igroupr(gicv3_driver_data->gicd_base, id);
 		grpmodr = gicd_get_igrpmodr(gicv3_driver_data->gicd_base, id);
 	}
@@ -469,11 +405,11 @@ unsigned int gicv3_get_interrupt_type(unsigned int id,
 	 * If the IGROUP bit is set, then it is a Group 1 Non secure
 	 * interrupt
 	 */
-	if (igroup)
+	if (igroup != 0U)
 		return INTR_GROUP1NS;
 
 	/* If the GRPMOD bit is set, then it is a Group 1 Secure interrupt */
-	if (grpmodr)
+	if (grpmodr != 0U)
 		return INTR_GROUP1S;
 
 	/* Else it is a Group 0 Secure interrupt */
@@ -493,12 +429,12 @@ unsigned int gicv3_get_interrupt_type(unsigned int id,
  *****************************************************************************/
 void gicv3_its_save_disable(uintptr_t gits_base, gicv3_its_ctx_t * const its_ctx)
 {
-	int i;
+	unsigned int i;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(IS_IN_EL3());
-	assert(its_ctx);
-	assert(gits_base);
+	assert(its_ctx != NULL);
+	assert(gits_base != 0U);
 
 	its_ctx->gits_ctlr = gits_read_ctlr(gits_base);
 
@@ -526,16 +462,16 @@ void gicv3_its_save_disable(uintptr_t gits_base, gicv3_its_ctx_t * const its_ctx
  *****************************************************************************/
 void gicv3_its_restore(uintptr_t gits_base, const gicv3_its_ctx_t * const its_ctx)
 {
-	int i;
+	unsigned int i;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(IS_IN_EL3());
-	assert(its_ctx);
-	assert(gits_base);
+	assert(its_ctx != NULL);
+	assert(gits_base != 0U);
 
 	/* Assert that the GITS is disabled and quiescent */
-	assert((gits_read_ctlr(gits_base) & GITS_CTLR_ENABLED_BIT) == 0);
-	assert((gits_read_ctlr(gits_base) & GITS_CTLR_QUIESCENT_BIT) != 0);
+	assert((gits_read_ctlr(gits_base) & GITS_CTLR_ENABLED_BIT) == 0U);
+	assert((gits_read_ctlr(gits_base) & GITS_CTLR_QUIESCENT_BIT) != 0U);
 
 	gits_write_cbaser(gits_base, its_ctx->gits_cbaser);
 	gits_write_cwriter(gits_base, its_ctx->gits_cwriter);
@@ -557,11 +493,11 @@ void gicv3_rdistif_save(unsigned int proc_num, gicv3_redist_ctx_t * const rdist_
 	uintptr_t gicr_base;
 	unsigned int int_id;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(IS_IN_EL3());
-	assert(rdist_ctx);
+	assert(rdist_ctx != NULL);
 
 	gicr_base = gicv3_driver_data->rdistif_base_addrs[proc_num];
 
@@ -585,7 +521,7 @@ void gicv3_rdistif_save(unsigned int proc_num, gicv3_redist_ctx_t * const rdist_
 	rdist_ctx->gicr_igrpmodr0 = gicr_read_igrpmodr0(gicr_base);
 	rdist_ctx->gicr_nsacr = gicr_read_nsacr(gicr_base);
 	for (int_id = MIN_SGI_ID; int_id < TOTAL_PCPU_INTR_NUM;
-			int_id += (1 << IPRIORITYR_SHIFT)) {
+			int_id += (1U << IPRIORITYR_SHIFT)) {
 		rdist_ctx->gicr_ipriorityr[(int_id - MIN_SGI_ID) >> IPRIORITYR_SHIFT] =
 				gicr_read_ipriorityr(gicr_base, int_id);
 	}
@@ -612,11 +548,11 @@ void gicv3_rdistif_init_restore(unsigned int proc_num,
 	uintptr_t gicr_base;
 	unsigned int int_id;
 
-	assert(gicv3_driver_data);
+	assert(gicv3_driver_data != NULL);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(IS_IN_EL3());
-	assert(rdist_ctx);
+	assert(rdist_ctx != NULL);
 
 	gicr_base = gicv3_driver_data->rdistif_base_addrs[proc_num];
 
@@ -635,7 +571,7 @@ void gicv3_rdistif_init_restore(unsigned int proc_num,
 	 * more scalable approach as it avoids clearing the enable bits in the
 	 * GICD_CTLR
 	 */
-	gicr_write_icenabler0(gicr_base, ~0);
+	gicr_write_icenabler0(gicr_base, ~0U);
 	/* Wait for pending writes to GICR_ICENABLER */
 	gicr_wait_for_pending_write(gicr_base);
 
@@ -653,7 +589,7 @@ void gicv3_rdistif_init_restore(unsigned int proc_num,
 	gicr_write_igroupr0(gicr_base, rdist_ctx->gicr_igroupr0);
 
 	for (int_id = MIN_SGI_ID; int_id < TOTAL_PCPU_INTR_NUM;
-			int_id += (1 << IPRIORITYR_SHIFT)) {
+			int_id += (1U << IPRIORITYR_SHIFT)) {
 		gicr_write_ipriorityr(gicr_base, int_id,
 		rdist_ctx->gicr_ipriorityr[
 				(int_id - MIN_SGI_ID) >> IPRIORITYR_SHIFT]);
@@ -693,18 +629,20 @@ void gicv3_distif_save(gicv3_dist_ctx_t * const dist_ctx)
 {
 	unsigned int num_ints;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(IS_IN_EL3());
-	assert(dist_ctx);
+	assert(dist_ctx != NULL);
 
 	uintptr_t gicd_base = gicv3_driver_data->gicd_base;
 
 	num_ints = gicd_read_typer(gicd_base);
 	num_ints &= TYPER_IT_LINES_NO_MASK;
-	num_ints = (num_ints + 1) << 5;
+	num_ints = (num_ints + 1U) << 5;
 
-	assert(num_ints <= MAX_SPI_ID + 1);
+	/* Filter out special INTIDs 1020-1023 */
+	if (num_ints > (MAX_SPI_ID + 1U))
+		num_ints = MAX_SPI_ID + 1U;
 
 	/* Wait for pending write to complete */
 	gicd_wait_for_pending_write(gicd_base);
@@ -712,31 +650,31 @@ void gicv3_distif_save(gicv3_dist_ctx_t * const dist_ctx)
 	/* Save the GICD_CTLR */
 	dist_ctx->gicd_ctlr = gicd_read_ctlr(gicd_base);
 
-	/* Save GICD_IGROUPR for INTIDs 32 - 1020 */
+	/* Save GICD_IGROUPR for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, igroupr, IGROUPR);
 
-	/* Save GICD_ISENABLER for INT_IDs 32 - 1020 */
+	/* Save GICD_ISENABLER for INT_IDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, isenabler, ISENABLER);
 
-	/* Save GICD_ISPENDR for INTIDs 32 - 1020 */
+	/* Save GICD_ISPENDR for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, ispendr, ISPENDR);
 
-	/* Save GICD_ISACTIVER for INTIDs 32 - 1020 */
+	/* Save GICD_ISACTIVER for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, isactiver, ISACTIVER);
 
-	/* Save GICD_IPRIORITYR for INTIDs 32 - 1020 */
+	/* Save GICD_IPRIORITYR for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, ipriorityr, IPRIORITYR);
 
-	/* Save GICD_ICFGR for INTIDs 32 - 1020 */
+	/* Save GICD_ICFGR for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, icfgr, ICFGR);
 
-	/* Save GICD_IGRPMODR for INTIDs 32 - 1020 */
+	/* Save GICD_IGRPMODR for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, igrpmodr, IGRPMODR);
 
-	/* Save GICD_NSACR for INTIDs 32 - 1020 */
+	/* Save GICD_NSACR for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, nsacr, NSACR);
 
-	/* Save GICD_IROUTER for INTIDs 32 - 1024 */
+	/* Save GICD_IROUTER for INTIDs 32 - 1019 */
 	SAVE_GICD_REGS(gicd_base, dist_ctx, num_ints, irouter, IROUTER);
 
 	/*
@@ -755,12 +693,12 @@ void gicv3_distif_save(gicv3_dist_ctx_t * const dist_ctx)
  *****************************************************************************/
 void gicv3_distif_init_restore(const gicv3_dist_ctx_t * const dist_ctx)
 {
-	unsigned int num_ints = 0;
+	unsigned int num_ints = 0U;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(IS_IN_EL3());
-	assert(dist_ctx);
+	assert(dist_ctx != NULL);
 
 	uintptr_t gicd_base = gicv3_driver_data->gicd_base;
 
@@ -780,26 +718,28 @@ void gicv3_distif_init_restore(const gicv3_dist_ctx_t * const dist_ctx)
 
 	num_ints = gicd_read_typer(gicd_base);
 	num_ints &= TYPER_IT_LINES_NO_MASK;
-	num_ints = (num_ints + 1) << 5;
+	num_ints = (num_ints + 1U) << 5;
 
-	assert(num_ints <= MAX_SPI_ID + 1);
+	/* Filter out special INTIDs 1020-1023 */
+	if (num_ints > (MAX_SPI_ID + 1U))
+		num_ints = MAX_SPI_ID + 1U;
 
-	/* Restore GICD_IGROUPR for INTIDs 32 - 1020 */
+	/* Restore GICD_IGROUPR for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, igroupr, IGROUPR);
 
-	/* Restore GICD_IPRIORITYR for INTIDs 32 - 1020 */
+	/* Restore GICD_IPRIORITYR for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, ipriorityr, IPRIORITYR);
 
-	/* Restore GICD_ICFGR for INTIDs 32 - 1020 */
+	/* Restore GICD_ICFGR for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, icfgr, ICFGR);
 
-	/* Restore GICD_IGRPMODR for INTIDs 32 - 1020 */
+	/* Restore GICD_IGRPMODR for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, igrpmodr, IGRPMODR);
 
-	/* Restore GICD_NSACR for INTIDs 32 - 1020 */
+	/* Restore GICD_NSACR for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, nsacr, NSACR);
 
-	/* Restore GICD_IROUTER for INTIDs 32 - 1020 */
+	/* Restore GICD_IROUTER for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, irouter, IROUTER);
 
 	/*
@@ -807,13 +747,13 @@ void gicv3_distif_init_restore(const gicv3_dist_ctx_t * const dist_ctx)
 	 * configured.
 	 */
 
-	/* Restore GICD_ISENABLER for INT_IDs 32 - 1020 */
+	/* Restore GICD_ISENABLER for INT_IDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, isenabler, ISENABLER);
 
-	/* Restore GICD_ISPENDR for INTIDs 32 - 1020 */
+	/* Restore GICD_ISPENDR for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, ispendr, ISPENDR);
 
-	/* Restore GICD_ISACTIVER for INTIDs 32 - 1020 */
+	/* Restore GICD_ISACTIVER for INTIDs 32 - 1019 */
 	RESTORE_GICD_REGS(gicd_base, dist_ctx, num_ints, isactiver, ISACTIVER);
 
 	/* Restore the GICD_CTLR */
@@ -828,7 +768,7 @@ void gicv3_distif_init_restore(const gicv3_dist_ctx_t * const dist_ctx)
  ******************************************************************************/
 unsigned int gicv3_get_running_priority(void)
 {
-	return read_icc_rpr_el1();
+	return (unsigned int)read_icc_rpr_el1();
 }
 
 /*******************************************************************************
@@ -841,10 +781,10 @@ unsigned int gicv3_get_interrupt_active(unsigned int id, unsigned int proc_num)
 {
 	unsigned int value;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(id <= MAX_SPI_ID);
 
 	if (id < MIN_SPI_ID) {
@@ -865,10 +805,10 @@ unsigned int gicv3_get_interrupt_active(unsigned int id, unsigned int proc_num)
  ******************************************************************************/
 void gicv3_enable_interrupt(unsigned int id, unsigned int proc_num)
 {
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(id <= MAX_SPI_ID);
 
 	/*
@@ -893,10 +833,10 @@ void gicv3_enable_interrupt(unsigned int id, unsigned int proc_num)
  ******************************************************************************/
 void gicv3_disable_interrupt(unsigned int id, unsigned int proc_num)
 {
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(id <= MAX_SPI_ID);
 
 	/*
@@ -931,10 +871,10 @@ void gicv3_set_interrupt_priority(unsigned int id, unsigned int proc_num,
 {
 	uintptr_t gicr_base;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 	assert(id <= MAX_SPI_ID);
 
 	if (id < MIN_SPI_ID) {
@@ -953,29 +893,30 @@ void gicv3_set_interrupt_priority(unsigned int id, unsigned int proc_num,
 void gicv3_set_interrupt_type(unsigned int id, unsigned int proc_num,
 		unsigned int type)
 {
-	unsigned int igroup = 0, grpmod = 0;
+	bool igroup = false, grpmod = false;
 	uintptr_t gicr_base;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 
 	switch (type) {
 	case INTR_GROUP1S:
-		igroup = 0;
-		grpmod = 1;
+		igroup = false;
+		grpmod = true;
 		break;
 	case INTR_GROUP0:
-		igroup = 0;
-		grpmod = 0;
+		igroup = false;
+		grpmod = false;
 		break;
 	case INTR_GROUP1NS:
-		igroup = 1;
-		grpmod = 0;
+		igroup = true;
+		grpmod = false;
 		break;
 	default:
-		assert(0);
+		assert(false);
+		break;
 	}
 
 	if (id < MIN_SPI_ID) {
@@ -1010,7 +951,7 @@ void gicv3_set_interrupt_type(unsigned int id, unsigned int proc_num,
  *
  * The target parameter must be a valid MPIDR in the system.
  ******************************************************************************/
-void gicv3_raise_secure_g0_sgi(int sgi_num, u_register_t target)
+void gicv3_raise_secure_g0_sgi(unsigned int sgi_num, u_register_t target)
 {
 	unsigned int tgt, aff3, aff2, aff1, aff0;
 	uint64_t sgi_val;
@@ -1029,7 +970,7 @@ void gicv3_raise_secure_g0_sgi(int sgi_num, u_register_t target)
 	 * this PE.
 	 */
 	assert(aff0 < GICV3_MAX_SGI_TARGETS);
-	tgt = BIT(aff0);
+	tgt = BIT_32(aff0);
 
 	/* Raise SGI to PE specified by its affinity */
 	sgi_val = GICV3_SGIR_VALUE(aff3, aff2, aff1, sgi_num, SGIR_IRM_TO_AFF,
@@ -1060,11 +1001,11 @@ void gicv3_set_spi_routing(unsigned int id, unsigned int irm, u_register_t mpidr
 	unsigned long long aff;
 	uint64_t router;
 
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 
 	assert((irm == GICV3_IRM_ANY) || (irm == GICV3_IRM_PE));
-	assert(id >= MIN_SPI_ID && id <= MAX_SPI_ID);
+	assert((id >= MIN_SPI_ID) && (id <= MAX_SPI_ID));
 
 	aff = gicd_irouter_val_from_mpidr(mpidr, irm);
 	gicd_write_irouter(gicv3_driver_data->gicd_base, id, aff);
@@ -1075,7 +1016,7 @@ void gicv3_set_spi_routing(unsigned int id, unsigned int irm, u_register_t mpidr
 	 */
 	if (irm == GICV3_IRM_ANY) {
 		router = gicd_read_irouter(gicv3_driver_data->gicd_base, id);
-		if (!((router >> IROUTER_IRM_SHIFT) & IROUTER_IRM_MASK)) {
+		if (((router >> IROUTER_IRM_SHIFT) & IROUTER_IRM_MASK) == 0U) {
 			ERROR("GICv3 implementation doesn't support routing ANY\n");
 			panic();
 		}
@@ -1089,10 +1030,10 @@ void gicv3_set_spi_routing(unsigned int id, unsigned int irm, u_register_t mpidr
  ******************************************************************************/
 void gicv3_clear_interrupt_pending(unsigned int id, unsigned int proc_num)
 {
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 
 	/*
 	 * Clear pending interrupt, and ensure that any shared variable updates
@@ -1115,10 +1056,10 @@ void gicv3_clear_interrupt_pending(unsigned int id, unsigned int proc_num)
  ******************************************************************************/
 void gicv3_set_interrupt_pending(unsigned int id, unsigned int proc_num)
 {
-	assert(gicv3_driver_data);
-	assert(gicv3_driver_data->gicd_base);
+	assert(gicv3_driver_data != NULL);
+	assert(gicv3_driver_data->gicd_base != 0U);
 	assert(proc_num < gicv3_driver_data->rdistif_num);
-	assert(gicv3_driver_data->rdistif_base_addrs);
+	assert(gicv3_driver_data->rdistif_base_addrs != NULL);
 
 	/*
 	 * Ensure that any shared variable updates depending on out of band
@@ -1142,7 +1083,7 @@ unsigned int gicv3_set_pmr(unsigned int mask)
 {
 	unsigned int old_mask;
 
-	old_mask = read_icc_pmr_el1();
+	old_mask = (uint32_t) read_icc_pmr_el1();
 
 	/*
 	 * Order memory updates w.r.t. PMR write, and ensure they're visible
@@ -1154,4 +1095,72 @@ unsigned int gicv3_set_pmr(unsigned int mask)
 	write_icc_pmr_el1(mask);
 
 	return old_mask;
+}
+
+/*******************************************************************************
+ * This function delegates the responsibility of discovering the corresponding
+ * Redistributor frames to each CPU itself. It is a modified version of
+ * gicv3_rdistif_base_addrs_probe() and is executed by each CPU in the platform
+ * unlike the previous way in which only the Primary CPU did the discovery of
+ * all the Redistributor frames for every CPU. It also handles the scenario in
+ * which the frames of various CPUs are not contiguous in physical memory.
+ ******************************************************************************/
+int gicv3_rdistif_probe(const uintptr_t gicr_frame)
+{
+	u_register_t mpidr;
+	unsigned int proc_num, proc_self;
+	uint64_t typer_val;
+	uintptr_t rdistif_base;
+	bool gicr_frame_found = false;
+
+	assert(gicv3_driver_data->gicr_base == 0U);
+
+	/* Ensure this function is called with Data Cache enabled */
+#ifndef __aarch64__
+	assert((read_sctlr() & SCTLR_C_BIT) != 0U);
+#else
+	assert((read_sctlr_el3() & SCTLR_C_BIT) != 0U);
+#endif /* !__aarch64__ */
+
+	proc_self = gicv3_driver_data->mpidr_to_core_pos(read_mpidr_el1());
+	rdistif_base = gicr_frame;
+	do {
+		typer_val = gicr_read_typer(rdistif_base);
+		if (gicv3_driver_data->mpidr_to_core_pos != NULL) {
+			mpidr = mpidr_from_gicr_typer(typer_val);
+			proc_num = gicv3_driver_data->mpidr_to_core_pos(mpidr);
+		} else {
+			proc_num = (unsigned int)(typer_val >> TYPER_PROC_NUM_SHIFT) &
+					TYPER_PROC_NUM_MASK;
+		}
+		if (proc_num == proc_self) {
+			/* The base address doesn't need to be initialized on
+			 * every warm boot.
+			 */
+			if (gicv3_driver_data->rdistif_base_addrs[proc_num] != 0U)
+				return 0;
+			gicv3_driver_data->rdistif_base_addrs[proc_num] =
+			rdistif_base;
+			gicr_frame_found = true;
+			break;
+		}
+		rdistif_base += (uintptr_t)(ULL(1) << GICR_PCPUBASE_SHIFT);
+	} while ((typer_val & TYPER_LAST_BIT) == 0U);
+
+	if (!gicr_frame_found)
+		return -1;
+
+	/*
+	 * Flush the driver data to ensure coherency. This is
+	 * not required if platform has HW_ASSISTED_COHERENCY
+	 * enabled.
+	 */
+#if !HW_ASSISTED_COHERENCY
+	/*
+	 * Flush the rdistif_base_addrs[] contents linked to the GICv3 driver.
+	 */
+	flush_dcache_range((uintptr_t)&(gicv3_driver_data->rdistif_base_addrs[proc_num]),
+		sizeof(*(gicv3_driver_data->rdistif_base_addrs)));
+#endif
+	return 0; /* Found matching GICR frame */
 }

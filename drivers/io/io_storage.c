@@ -5,11 +5,12 @@
  */
 
 #include <assert.h>
-#include <io_driver.h>
-#include <io_storage.h>
-#include <platform_def.h>
 #include <stddef.h>
 
+#include <platform_def.h>
+
+#include <drivers/io/io_driver.h>
+#include <drivers/io/io_storage.h>
 
 /* Storage for a fixed maximum number of IO entities, definable by platform */
 static io_entity_t entity_pool[MAX_IO_HANDLES];
@@ -188,9 +189,6 @@ int io_dev_init(uintptr_t dev_handle, const uintptr_t init_params)
 	return result;
 }
 
-
-/* TODO: Consider whether an explicit "shutdown" API should be included */
-
 /* Close a connection to a device */
 int io_dev_close(uintptr_t dev_handle)
 {
@@ -239,7 +237,7 @@ int io_open(uintptr_t dev_handle, const uintptr_t spec, uintptr_t *handle)
 
 
 /* Seek to a specific position in an IO entity */
-int io_seek(uintptr_t handle, io_seek_mode_t mode, ssize_t offset)
+int io_seek(uintptr_t handle, io_seek_mode_t mode, signed long long offset)
 {
 	int result = -ENODEV;
 	assert(is_valid_entity(handle) && is_valid_seek_mode(mode));
@@ -279,7 +277,7 @@ int io_read(uintptr_t handle,
 		size_t *length_read)
 {
 	int result = -ENODEV;
-	assert(is_valid_entity(handle) && (buffer != (uintptr_t)NULL));
+	assert(is_valid_entity(handle));
 
 	io_entity_t *entity = (io_entity_t *)handle;
 
@@ -299,7 +297,7 @@ int io_write(uintptr_t handle,
 		size_t *length_written)
 {
 	int result = -ENODEV;
-	assert(is_valid_entity(handle) && (buffer != (uintptr_t)NULL));
+	assert(is_valid_entity(handle));
 
 	io_entity_t *entity = (io_entity_t *)handle;
 

@@ -1,20 +1,24 @@
 /*
- * Copyright (c) 2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2017-2018, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <cdn_dp.h>
-#include <smcc.h>
+#include <assert.h>
+#include <cdefs.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <lib/smccc.h>
+
+#include <cdn_dp.h>
 
 __asm__(
 	".pushsection .text.hdcp_handler, \"ax\", %progbits\n"
 	".global hdcp_handler\n"
 	".balign 4\n"
 	"hdcp_handler:\n"
-	".incbin \"" __XSTRING(HDCPFW) "\"\n"
+	".incbin \"" HDCPFW "\"\n"
 	".type hdcp_handler, %function\n"
 	".size hdcp_handler, .- hdcp_handler\n"
 	".popsection\n"
@@ -37,6 +41,7 @@ uint64_t dp_hdcp_ctrl(uint64_t type)
 			return hdcp_handler(&key);
 		else
 			return PSCI_E_INVALID_PARAMS;
+		assert(0); /* Unreachable */
 	default:
 		return SMC_UNK;
 	}

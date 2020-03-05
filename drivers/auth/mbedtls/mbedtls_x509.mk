@@ -6,11 +6,4 @@
 
 include drivers/auth/mbedtls/mbedtls_common.mk
 
-MBEDTLS_X509_SOURCES	:=	drivers/auth/mbedtls/mbedtls_x509_parser.c	\
-				$(addprefix ${MBEDTLS_DIR}/library/,		\
-				x509.c 						\
-				x509_crt.c 					\
-				)
-
-BL1_SOURCES		+=	${MBEDTLS_X509_SOURCES}
-BL2_SOURCES		+=	${MBEDTLS_X509_SOURCES}
+MBEDTLS_SOURCES	+=	drivers/auth/mbedtls/mbedtls_x509_parser.c

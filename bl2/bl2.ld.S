@@ -1,11 +1,12 @@
 /*
- * Copyright (c) 2013-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <platform_def.h>
-#include <xlat_tables_defs.h>
+
+#include <lib/xlat_tables/xlat_tables_defs.h>
 
 OUTPUT_FORMAT(PLATFORM_LINKER_FORMAT)
 OUTPUT_ARCH(PLATFORM_LINKER_ARCH)
@@ -26,15 +27,29 @@ SECTIONS
     .text . : {
         __TEXT_START__ = .;
         *bl2_entrypoint.o(.text*)
-        *(.text*)
+        *(SORT_BY_ALIGNMENT(.text*))
         *(.vectors)
-        . = NEXT(PAGE_SIZE);
+        . = ALIGN(PAGE_SIZE);
         __TEXT_END__ = .;
+     } >RAM
+
+     /* .ARM.extab and .ARM.exidx are only added because Clang need them */
+     .ARM.extab . : {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+     } >RAM
+
+     .ARM.exidx . : {
+        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
      } >RAM
 
     .rodata . : {
         __RODATA_START__ = .;
-        *(.rodata*)
+        *(SORT_BY_ALIGNMENT(.rodata*))
+
+       . = ALIGN(8);
+        __FCONF_POPULATOR_START__ = .;
+        KEEP(*(.fconf_populator))
+        __FCONF_POPULATOR_END__ = .;
 
         /* Ensure 8-byte alignment for descriptors and ensure inclusion */
         . = ALIGN(8);
@@ -42,15 +57,20 @@ SECTIONS
         KEEP(*(.img_parser_lib_descs))
         __PARSER_LIB_DESCS_END__ = .;
 
-        . = NEXT(PAGE_SIZE);
+        . = ALIGN(PAGE_SIZE);
         __RODATA_END__ = .;
     } >RAM
 #else
     ro . : {
         __RO_START__ = .;
         *bl2_entrypoint.o(.text*)
-        *(.text*)
-        *(.rodata*)
+        *(SORT_BY_ALIGNMENT(.text*))
+        *(SORT_BY_ALIGNMENT(.rodata*))
+
+	. = ALIGN(8);
+         __FCONF_POPULATOR_START__ = .;
+         KEEP(*(.fconf_populator))
+         __FCONF_POPULATOR_END__ = .;
 
         /* Ensure 8-byte alignment for descriptors and ensure inclusion */
         . = ALIGN(8);
@@ -65,7 +85,7 @@ SECTIONS
          * read-only, executable.  No RW data from the next section must
          * creep in.  Ensure the rest of the current memory page is unused.
          */
-        . = NEXT(PAGE_SIZE);
+        . = ALIGN(PAGE_SIZE);
         __RO_END__ = .;
     } >RAM
 #endif
@@ -83,7 +103,7 @@ SECTIONS
      */
     .data . : {
         __DATA_START__ = .;
-        *(.data*)
+        *(SORT_BY_ALIGNMENT(.data*))
         __DATA_END__ = .;
     } >RAM
 
@@ -108,7 +128,8 @@ SECTIONS
     /*
      * The xlat_table section is for full, aligned page tables (4K).
      * Removing them from .bss avoids forcing 4K alignment on
-     * the .bss section and eliminates the unecessary zero init
+     * the .bss section. The tables are initialized to zero by the translation
+     * tables library.
      */
     xlat_table (NOLOAD) : {
         *(xlat_table)
@@ -130,7 +151,7 @@ SECTIONS
          * as device memory.  No other unexpected data must creep in.
          * Ensure the rest of the current memory page is unused.
          */
-        . = NEXT(PAGE_SIZE);
+        . = ALIGN(PAGE_SIZE);
         __COHERENT_RAM_END__ = .;
     } >RAM
 #endif

@@ -1,15 +1,17 @@
 /*
- * Copyright (c) 2015-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
 #include <assert.h>
+
+#include <arch_helpers.h>
 #include <context.h>
-#include <context_mgmt.h>
-#include <debug.h>
-#include <platform.h>
+#include <common/debug.h>
+#include <lib/el3_runtime/context_mgmt.h>
+#include <plat/common/platform.h>
+
 #include "../bl1_private.h"
 
 /*
@@ -40,7 +42,7 @@ void cm_set_context(void *context, uint32_t security_state)
  ******************************************************************************/
 void bl1_prepare_next_image(unsigned int image_id)
 {
-	unsigned int security_state;
+	unsigned int security_state, mode = MODE_EL1;
 	image_desc_t *image_desc;
 	entry_point_info_t *next_bl_ep;
 
@@ -49,9 +51,9 @@ void bl1_prepare_next_image(unsigned int image_id)
 	 * Ensure that the build flag to save AArch32 system registers in CPU
 	 * context is not set for AArch64-only platforms.
 	 */
-	if (EL_IMPLEMENTED(1) == EL_IMPL_A64ONLY) {
+	if (el_implemented(1) == EL_IMPL_A64ONLY) {
 		ERROR("EL1 supports AArch64-only. Please set build flag "
-				"CTX_INCLUDE_AARCH32_REGS = 0");
+				"CTX_INCLUDE_AARCH32_REGS = 0\n");
 		panic();
 	}
 #endif
@@ -67,23 +69,16 @@ void bl1_prepare_next_image(unsigned int image_id)
 	security_state = GET_SECURITY_STATE(next_bl_ep->h.attr);
 
 	/* Setup the Secure/Non-Secure context if not done already. */
-	if (!cm_get_context(security_state))
+	if (cm_get_context(security_state) == NULL)
 		cm_set_context(&bl1_cpu_context[security_state], security_state);
 
 	/* Prepare the SPSR for the next BL image. */
-	if (security_state == SECURE) {
-		next_bl_ep->spsr = SPSR_64(MODE_EL1, MODE_SP_ELX,
-				   DISABLE_ALL_EXCEPTIONS);
-	} else {
-		/* Use EL2 if supported; else use EL1. */
-		if (EL_IMPLEMENTED(2)) {
-			next_bl_ep->spsr = SPSR_64(MODE_EL2, MODE_SP_ELX,
-				DISABLE_ALL_EXCEPTIONS);
-		} else {
-			next_bl_ep->spsr = SPSR_64(MODE_EL1, MODE_SP_ELX,
-			   DISABLE_ALL_EXCEPTIONS);
-		}
+	if ((security_state != SECURE) && (el_implemented(2) != EL_IMPL_NONE)) {
+		mode = MODE_EL2;
 	}
+
+	next_bl_ep->spsr = SPSR_64(mode, MODE_SP_ELX,
+		DISABLE_ALL_EXCEPTIONS);
 
 	/* Allow platform to make change */
 	bl1_plat_set_ep_info(image_id, next_bl_ep);

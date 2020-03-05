@@ -1,31 +1,34 @@
 /*
- * Copyright (c) 2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2017-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /* Runtime firmware routines to report errata status for the current CPU. */
 
-#include <arch_helpers.h>
 #include <assert.h>
-#include <cpu_data.h>
-#include <debug.h>
-#include <errata_report.h>
-#include <spinlock.h>
-#include <utils.h>
+#include <stdbool.h>
+
+#include <arch_helpers.h>
+#include <common/debug.h>
+#include <lib/cpus/errata_report.h>
+#include <lib/el3_runtime/cpu_data.h>
+#include <lib/spinlock.h>
 
 #ifdef IMAGE_BL1
 # define BL_STRING	"BL1"
-#elif defined(AARCH64) && defined(IMAGE_BL31)
+#elif defined(__aarch64__) && defined(IMAGE_BL31)
 # define BL_STRING	"BL31"
-#elif defined(AARCH32) && defined(IMAGE_BL32)
+#elif !defined(__arch64__) && defined(IMAGE_BL32)
 # define BL_STRING	"BL32"
+#elif defined(IMAGE_BL2) && BL2_AT_EL3
+# define BL_STRING "BL2"
 #else
 # error This image should not be printing errata status
 #endif
 
 /* Errata format: BL stage, CPU, errata ID, message */
-#define ERRATA_FORMAT	"%s: %s: errata workaround for %s was %s\n"
+#define ERRATA_FORMAT	"%s: %s: CPU workaround for %s was %s\n"
 
 /*
  * Returns whether errata needs to be reported. Passed arguments are private to
@@ -33,10 +36,10 @@
  */
 int errata_needs_reporting(spinlock_t *lock, uint32_t *reported)
 {
-	int report_now;
+	bool report_now;
 
 	/* If already reported, return false. */
-	if (*reported)
+	if (*reported != 0U)
 		return 0;
 
 	/*
@@ -44,7 +47,7 @@ int errata_needs_reporting(spinlock_t *lock, uint32_t *reported)
 	 * report status to true.
 	 */
 	spin_lock(lock);
-	report_now = !(*reported);
+	report_now = (*reported == 0U);
 	if (report_now)
 		*reported = 1;
 	spin_unlock(lock);
@@ -73,8 +76,8 @@ void errata_print_msg(unsigned int status, const char *cpu, const char *id)
 
 
 	assert(status < ARRAY_SIZE(errata_status_str));
-	assert(cpu);
-	assert(id);
+	assert(cpu != NULL);
+	assert(id != NULL);
 
 	msg = errata_status_str[status];
 

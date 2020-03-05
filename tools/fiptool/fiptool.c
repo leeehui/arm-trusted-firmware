@@ -51,7 +51,7 @@ static cmd_t cmds[] = {
 
 static image_desc_t *image_desc_head;
 static size_t nr_image_descs;
-static uuid_t uuid_null = { 0 };
+static const uuid_t uuid_null;
 static int verbose;
 
 static void vlog(int prio, const char *msg, va_list ap)
@@ -169,7 +169,10 @@ static void free_image_desc(image_desc_t *desc)
 	free(desc->name);
 	free(desc->cmdline_name);
 	free(desc->action_arg);
-	free(desc->image);
+	if (desc->image) {
+		free(desc->image->buffer);
+		free(desc->image);
+	}
 	free(desc);
 }
 
@@ -238,14 +241,15 @@ static void uuid_to_str(char *s, size_t len, const uuid_t *u)
 {
 	assert(len >= (_UUID_STR_LEN + 1));
 
-	snprintf(s, len, "%08X-%04X-%04X-%04X-%04X%04X%04X",
-	    u->time_low,
-	    u->time_mid,
-	    u->time_hi_and_version,
-	    ((uint16_t)u->clock_seq_hi_and_reserved << 8) | u->clock_seq_low,
-	    ((uint16_t)u->node[0] << 8) | u->node[1],
-	    ((uint16_t)u->node[2] << 8) | u->node[3],
-	    ((uint16_t)u->node[4] << 8) | u->node[5]);
+	snprintf(s, len,
+	    "%02X%02X%02X%02X-%02X%02X-%02X%02X-%04X-%04X%04X%04X",
+	    u->time_low[0], u->time_low[1], u->time_low[2], u->time_low[3],
+	    u->time_mid[0], u->time_mid[1],
+	    u->time_hi_and_version[0], u->time_hi_and_version[1],
+	    (u->clock_seq_hi_and_reserved << 8) | u->clock_seq_low,
+	    (u->node[0] << 8) | u->node[1],
+	    (u->node[2] << 8) | u->node[3],
+	    (u->node[4] << 8) | u->node[5]);
 }
 
 static void uuid_from_str(uuid_t *u, const char *s)
@@ -258,15 +262,19 @@ static void uuid_from_str(uuid_t *u, const char *s)
 		log_errx("Invalid UUID: %s", s);
 
 	n = sscanf(s,
-	    "%8x-%4hx-%4hx-%2hhx%2hhx-%2hhx%2hhx%2hhx%2hhx%2hhx%2hhx",
-	    &u->time_low, &u->time_mid, &u->time_hi_and_version,
-	    &u->clock_seq_hi_and_reserved, &u->clock_seq_low, &u->node[0],
-	    &u->node[1], &u->node[2], &u->node[3], &u->node[4], &u->node[5]);
+	    "%2hhx%2hhx%2hhx%2hhx-%2hhx%2hhx-%2hhx%2hhx-%2hhx%2hhx-%2hhx%2hhx%2hhx%2hhx%2hhx%2hhx",
+	    &u->time_low[0], &u->time_low[1], &u->time_low[2], &u->time_low[3],
+	    &u->time_mid[0], &u->time_mid[1],
+	    &u->time_hi_and_version[0], &u->time_hi_and_version[1],
+	    &u->clock_seq_hi_and_reserved, &u->clock_seq_low,
+	    &u->node[0], &u->node[1],
+	    &u->node[2], &u->node[3],
+	    &u->node[4], &u->node[5]);
 	/*
-	 * Given the format specifier above, we expect 11 items to be scanned
+	 * Given the format specifier above, we expect 16 items to be scanned
 	 * for a properly formatted UUID.
 	 */
-	if (n != 11)
+	if (n != 16)
 		log_errx("Invalid UUID: %s", s);
 }
 
@@ -492,7 +500,7 @@ static int pack_images(const char *filename, uint64_t toc_flags, unsigned long a
 	fip_toc_header_t *toc_header;
 	fip_toc_entry_t *toc_entry;
 	char *buf;
-	uint64_t entry_offset, buf_size, payload_size = 0;
+	uint64_t entry_offset, buf_size, payload_size = 0, pad_size;
 	size_t nr_images = 0;
 
 	for (desc = image_desc_head; desc != NULL; desc = desc->next)
@@ -526,9 +534,13 @@ static int pack_images(const char *filename, uint64_t toc_flags, unsigned long a
 		entry_offset += image->toc_e.size;
 	}
 
-	/* Append a null uuid entry to mark the end of ToC entries. */
+	/*
+	 * Append a null uuid entry to mark the end of ToC entries.
+	 * NOTE the offset address for the last toc_entry must match the fip
+	 * size.
+	 */
 	memset(toc_entry, 0, sizeof(*toc_entry));
-	toc_entry->offset_address = entry_offset;
+	toc_entry->offset_address = (entry_offset + align - 1) & ~(align - 1);
 
 	/* Generate the FIP file. */
 	fp = fopen(filename, "wb");
@@ -539,7 +551,6 @@ static int pack_images(const char *filename, uint64_t toc_flags, unsigned long a
 		log_dbgx("Metadata size: %zu bytes", buf_size);
 
 	xfwrite(buf, buf_size, fp, filename);
-	free(buf);
 
 	if (verbose)
 		log_dbgx("Payload size: %zu bytes", payload_size);
@@ -555,6 +566,14 @@ static int pack_images(const char *filename, uint64_t toc_flags, unsigned long a
 		xfwrite(image->buffer, image->toc_e.size, fp, filename);
 	}
 
+	if (fseek(fp, entry_offset, SEEK_SET))
+		log_errx("Failed to set file position");
+
+	pad_size = toc_entry->offset_address - entry_offset;
+	while (pad_size--)
+		fputc(0x0, fp);
+
+	free(buf);
 	fclose(fp);
 	return 0;
 }
@@ -683,7 +702,7 @@ static int create_cmd(int argc, char *argv[])
 		case 'b': {
 			char name[_UUID_STR_LEN + 1];
 			char filename[PATH_MAX] = { 0 };
-			uuid_t uuid = { 0 };
+			uuid_t uuid = uuid_null;
 			image_desc_t *desc;
 
 			parse_blob_opt(optarg, &uuid,
@@ -780,7 +799,7 @@ static int update_cmd(int argc, char *argv[])
 		case 'b': {
 			char name[_UUID_STR_LEN + 1];
 			char filename[PATH_MAX] = { 0 };
-			uuid_t uuid = { 0 };
+			uuid_t uuid = uuid_null;
 			image_desc_t *desc;
 
 			parse_blob_opt(optarg, &uuid,
@@ -888,7 +907,7 @@ static int unpack_cmd(int argc, char *argv[])
 		case 'b': {
 			char name[_UUID_STR_LEN + 1];
 			char filename[PATH_MAX] = { 0 };
-			uuid_t uuid = { 0 };
+			uuid_t uuid = uuid_null;
 			image_desc_t *desc;
 
 			parse_blob_opt(optarg, &uuid,
@@ -1027,7 +1046,7 @@ static int remove_cmd(int argc, char *argv[])
 			break;
 		case 'b': {
 			char name[_UUID_STR_LEN + 1], filename[PATH_MAX];
-			uuid_t uuid = { 0 };
+			uuid_t uuid = uuid_null;
 			image_desc_t *desc;
 
 			parse_blob_opt(optarg, &uuid,

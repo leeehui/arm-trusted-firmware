@@ -4,18 +4,21 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
 #include <assert.h>
-#include <cci.h>
-#include <console.h>
-#include <debug.h>
-#include <gicv2.h>
+
+#include <arch_helpers.h>
+#include <common/debug.h>
+#include <drivers/arm/cci.h>
+#include <drivers/arm/gicv2.h>
+#include <drivers/arm/pl011.h>
+#include <drivers/delay_timer.h>
+#include <lib/mmio.h>
+#include <lib/psci/psci.h>
+
 #include <hi3660.h>
 #include <hi3660_crg.h>
-#include <mmio.h>
-#include <psci.h>
-#include "drivers/pwrc/hisi_pwrc.h"
 
+#include "drivers/pwrc/hisi_pwrc.h"
 #include "hikey960_def.h"
 #include "hikey960_private.h"
 
@@ -26,63 +29,26 @@
 #define SYSTEM_PWR_STATE(state) \
 	((state)->pwr_domain_state[PLAT_MAX_PWR_LVL])
 
-#define PSTATE_WIDTH		4
-#define PSTATE_MASK		((1 << PSTATE_WIDTH) - 1)
-
-#define MAKE_PWRSTATE(lvl2_state, lvl1_state, lvl0_state, pwr_lvl, type) \
-		(((lvl2_state) << (PSTATE_ID_SHIFT + PSTATE_WIDTH * 2)) | \
-		 ((lvl1_state) << (PSTATE_ID_SHIFT + PSTATE_WIDTH)) | \
-		 ((lvl0_state) << (PSTATE_ID_SHIFT)) | \
-		 ((pwr_lvl) << PSTATE_PWR_LVL_SHIFT) | \
-		 ((type) << PSTATE_TYPE_SHIFT))
-
-/*
- * The table storing the valid idle power states. Ensure that the
- * array entries are populated in ascending order of state-id to
- * enable us to use binary search during power state validation.
- * The table must be terminated by a NULL entry.
- */
-const unsigned int hikey960_pwr_idle_states[] = {
-	/* State-id - 0x001 */
-	MAKE_PWRSTATE(PLAT_MAX_RUN_STATE, PLAT_MAX_RUN_STATE,
-		      PLAT_MAX_STB_STATE, MPIDR_AFFLVL0, PSTATE_TYPE_STANDBY),
-	/* State-id - 0x002 */
-	MAKE_PWRSTATE(PLAT_MAX_RUN_STATE, PLAT_MAX_RUN_STATE,
-		      PLAT_MAX_RET_STATE, MPIDR_AFFLVL0, PSTATE_TYPE_STANDBY),
-	/* State-id - 0x003 */
-	MAKE_PWRSTATE(PLAT_MAX_RUN_STATE, PLAT_MAX_RUN_STATE,
-		      PLAT_MAX_OFF_STATE, MPIDR_AFFLVL0, PSTATE_TYPE_POWERDOWN),
-	/* State-id - 0x033 */
-	MAKE_PWRSTATE(PLAT_MAX_RUN_STATE, PLAT_MAX_OFF_STATE,
-		      PLAT_MAX_OFF_STATE, MPIDR_AFFLVL1, PSTATE_TYPE_POWERDOWN),
-	0,
-};
-
 #define DMAC_GLB_REG_SEC	0x694
 #define AXI_CONF_BASE		0x820
 
+static unsigned int uart_base;
+static console_t console;
 static uintptr_t hikey960_sec_entrypoint;
 
 static void hikey960_pwr_domain_standby(plat_local_state_t cpu_state)
 {
 	unsigned long scr;
-	unsigned int val = 0;
-
-	assert(cpu_state == PLAT_MAX_STB_STATE ||
-	       cpu_state == PLAT_MAX_RET_STATE);
 
 	scr = read_scr_el3();
 
-	/* Enable Physical IRQ and FIQ to wake the CPU*/
+	/* Enable Physical IRQ and FIQ to wake the CPU */
 	write_scr_el3(scr | SCR_IRQ_BIT | SCR_FIQ_BIT);
 
-	if (cpu_state == PLAT_MAX_RET_STATE)
-		set_retention_ticks(val);
-
+	/* Add barrier before CPU enter WFI state */
+	isb();
+	dsb();
 	wfi();
-
-	if (cpu_state == PLAT_MAX_RET_STATE)
-		clr_retention_ticks(val);
 
 	/*
 	 * Restore SCR to the original value, synchronisazion of
@@ -152,6 +118,9 @@ void hikey960_pwr_domain_off(const psci_power_state_t *target_state)
 
 static void __dead2 hikey960_system_reset(void)
 {
+	dsb();
+	isb();
+	mdelay(2000);
 	mmio_write_32(SCTRL_SCPEREN1_REG,
 		      SCPEREN1_WAIT_DDR_SELFREFRESH_DONE_BYPASS);
 	mmio_write_32(SCTRL_SCSYSSTAT_REG, 0xdeadbeef);
@@ -161,33 +130,37 @@ static void __dead2 hikey960_system_reset(void)
 int hikey960_validate_power_state(unsigned int power_state,
 			       psci_power_state_t *req_state)
 {
-	unsigned int state_id;
+	unsigned int pstate = psci_get_pstate_type(power_state);
+	unsigned int pwr_lvl = psci_get_pstate_pwrlvl(power_state);
 	int i;
 
 	assert(req_state);
 
-	/*
-	 *  Currently we are using a linear search for finding the matching
-	 *  entry in the idle power state array. This can be made a binary
-	 *  search if the number of entries justify the additional complexity.
-	 */
-	for (i = 0; !!hikey960_pwr_idle_states[i]; i++) {
-		if (power_state == hikey960_pwr_idle_states[i])
-			break;
-	}
-
-	/* Return error if entry not found in the idle state array */
-	if (!hikey960_pwr_idle_states[i])
+	if (pwr_lvl > PLAT_MAX_PWR_LVL)
 		return PSCI_E_INVALID_PARAMS;
 
-	i = 0;
-	state_id = psci_get_pstate_id(power_state);
+	/* Sanity check the requested state */
+	if (pstate == PSTATE_TYPE_STANDBY) {
+		/*
+		 * It's possible to enter standby only on power level 0
+		 * Ignore any other power level.
+		 */
+		if (pwr_lvl != MPIDR_AFFLVL0)
+			return PSCI_E_INVALID_PARAMS;
 
-	/* Parse the State ID and populate the state info parameter */
-	while (state_id) {
-		req_state->pwr_domain_state[i++] = state_id & PSTATE_MASK;
-		state_id >>= PSTATE_WIDTH;
+		req_state->pwr_domain_state[MPIDR_AFFLVL0] =
+					PLAT_MAX_RET_STATE;
+	} else {
+		for (i = MPIDR_AFFLVL0; i <= pwr_lvl; i++)
+			req_state->pwr_domain_state[i] =
+					PLAT_MAX_OFF_STATE;
 	}
+
+	/*
+	 * We expect the 'state id' to be zero.
+	 */
+	if (psci_get_pstate_id(power_state))
+		return PSCI_E_INVALID_PARAMS;
 
 	return PSCI_E_SUCCESS;
 }
@@ -255,7 +228,7 @@ static void hikey960_pwr_domain_suspend(const psci_power_state_t *target_state)
 			/* check the SR flag bit to determine
 			 * CLUSTER_IDLE_IPC or AP_SR_IPC to send
 			 */
-			if (hisi_test_ap_suspend_flag(cluster))
+			if (hisi_test_ap_suspend_flag())
 				hisi_enter_ap_suspend(cluster, core);
 			else
 				hisi_enter_cluster_idle(cluster, core);
@@ -295,11 +268,11 @@ hikey960_pwr_domain_suspend_finish(const psci_power_state_t *target_state)
 	hisi_clear_cpuidle_flag(cluster, core);
 	hisi_cpuidle_unlock(cluster, core);
 
-	if (hisi_test_ap_suspend_flag(cluster)) {
+	if (hisi_test_ap_suspend_flag()) {
 		hikey960_sr_dma_reinit();
 		gicv2_cpuif_enable();
-		console_init(PL011_UART6_BASE, PL011_UART_CLK_IN_HZ,
-			     PL011_BAUDRATE);
+		console_pl011_register(uart_base, PL011_UART_CLK_IN_HZ,
+				       PL011_BAUDRATE, &console);
 	}
 
 	hikey960_pwr_domain_on_finish(target_state);
@@ -330,6 +303,19 @@ static const plat_psci_ops_t hikey960_psci_ops = {
 int plat_setup_psci_ops(uintptr_t sec_entrypoint,
 			const plat_psci_ops_t **psci_ops)
 {
+	unsigned int id = 0;
+	int ret;
+
+	ret = hikey960_read_boardid(&id);
+	if (ret == 0) {
+		if (id == 5300U)
+			uart_base = PL011_UART5_BASE;
+		else
+			uart_base = PL011_UART6_BASE;
+	} else {
+		uart_base = PL011_UART6_BASE;
+	}
+
 	hikey960_sec_entrypoint = sec_entrypoint;
 
 	INFO("%s: sec_entrypoint=0x%lx\n", __func__,

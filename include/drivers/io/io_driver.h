@@ -4,12 +4,12 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef __IO_DRIVER_H__
-#define __IO_DRIVER_H__
+#ifndef IO_DRIVER_H
+#define IO_DRIVER_H
 
-#include <io_storage.h>
 #include <stdint.h>
 
+#include <drivers/io/io_storage.h>
 
 /* Generic IO entity structure,representing an accessible IO construct on the
  * device, such as a file */
@@ -39,7 +39,7 @@ typedef struct io_dev_funcs {
 	io_type_t (*type)(void);
 	int (*open)(io_dev_info_t *dev_info, const uintptr_t spec,
 			io_entity_t *entity);
-	int (*seek)(io_entity_t *entity, int mode, ssize_t offset);
+	int (*seek)(io_entity_t *entity, int mode, signed long long offset);
 	int (*size)(io_entity_t *entity, size_t *length);
 	int (*read)(io_entity_t *entity, uintptr_t buffer, size_t length,
 			size_t *length_read);
@@ -56,4 +56,4 @@ typedef struct io_dev_funcs {
 /* Register an IO device */
 int io_register_device(const io_dev_info_t *dev_info);
 
-#endif  /* __IO_DRIVER_H__ */
+#endif /* IO_DRIVER_H */

@@ -1,13 +1,9 @@
 /*
- * Copyright (c) 2015-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <crypto_mod.h>
-#include <debug.h>
-#include <mbedtls_common.h>
-#include <mbedtls_config.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -16,6 +12,11 @@
 #include <mbedtls/memory_buffer_alloc.h>
 #include <mbedtls/oid.h>
 #include <mbedtls/platform.h>
+
+#include <common/debug.h>
+#include <drivers/auth/crypto_mod.h>
+#include <drivers/auth/mbedtls/mbedtls_common.h>
+#include <drivers/auth/mbedtls/mbedtls_config.h>
 
 #define LIB_NAME		"mbed TLS"
 
@@ -204,7 +205,32 @@ static int verify_hash(void *data_ptr, unsigned int data_len,
 	return CRYPTO_SUCCESS;
 }
 
+#if MEASURED_BOOT
+/*
+ * Calculate a hash
+ *
+ * output points to the computed hash
+ */
+int calc_hash(unsigned int alg, void *data_ptr,
+	      unsigned int data_len, unsigned char *output)
+{
+	const mbedtls_md_info_t *md_info;
+
+	md_info = mbedtls_md_info_from_type((mbedtls_md_type_t)alg);
+	if (md_info == NULL) {
+		return CRYPTO_ERR_HASH;
+	}
+
+	/* Calculate the hash of the data */
+	return mbedtls_md(md_info, data_ptr, data_len, output);
+}
+#endif /* MEASURED_BOOT */
+
 /*
  * Register crypto library descriptor
  */
+#if MEASURED_BOOT
+REGISTER_CRYPTO_LIB(LIB_NAME, init, verify_signature, verify_hash, calc_hash);
+#else
 REGISTER_CRYPTO_LIB(LIB_NAME, init, verify_signature, verify_hash);
+#endif /* MEASURED_BOOT */

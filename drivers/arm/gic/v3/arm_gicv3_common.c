@@ -10,12 +10,13 @@
 * APIs that are different to those generic ones in GICv3 driver.
  */
 
-#include <arch_helpers.h>
 #include <assert.h>
-#include <gicv3.h>
+
+#include <arch_helpers.h>
+#include <drivers/arm/arm_gicv3_common.h>
+#include <drivers/arm/gicv3.h>
 
 #include "gicv3_private.h"
-#include "arm_gicv3_common.h"
 
 /*
  * Flush the internal GIC cache of the LPIs pending tables to memory before
@@ -82,6 +83,15 @@ void arm_gicv3_distif_post_restore(unsigned int rdist_proc_num)
 	 */
 	gicr_base = gicv3_driver_data->rdistif_base_addrs[rdist_proc_num];
 	assert(gicr_base);
+
+	/*
+	 * If the GIC had power removed, the GICR_WAKER state will be reset.
+	 * Since the GICR_WAKER.Sleep and GICR_WAKER.Quiescent bits are cleared,
+	 * we can exit early. This also prevents the following assert from
+	 * erroneously triggering.
+	 */
+	if (!(gicr_read_waker(gicr_base) & WAKER_SL_BIT))
+		return;
 
 	/*
 	 * Writes to GICR_WAKER.Sleep bit are ignored if GICR_WAKER.Quiescent

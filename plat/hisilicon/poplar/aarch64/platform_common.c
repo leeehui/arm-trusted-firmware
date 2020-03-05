@@ -4,16 +4,17 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
-#include <arm_gic.h>
 #include <assert.h>
-#include <bl_common.h>
-#include <debug.h>
-#include <delay_timer.h>
 #include <errno.h>
-#include <mmio.h>
-#include <platform.h>
-#include <xlat_tables.h>
+
+#include <arch_helpers.h>
+#include <common/bl_common.h>
+#include <common/debug.h>
+#include <drivers/delay_timer.h>
+#include <lib/mmio.h>
+#include <lib/xlat_tables/xlat_tables.h>
+#include <plat/common/platform.h>
+
 #include "hi3798cv200.h"
 #include "platform_def.h"
 
@@ -25,9 +26,24 @@
 					DEVICE_SIZE,			\
 					MT_DEVICE | MT_RW | MT_SECURE)
 
+#define MAP_TSP_MEM	MAP_REGION_FLAT(TSP_SEC_MEM_BASE,		\
+					TSP_SEC_MEM_SIZE,		\
+					MT_MEMORY | MT_RW | MT_SECURE)
+
+#ifdef SPD_opteed
+#define MAP_OPTEE_PAGEABLE	MAP_REGION_FLAT(		\
+				POPLAR_OPTEE_PAGEABLE_LOAD_BASE,	\
+				POPLAR_OPTEE_PAGEABLE_LOAD_SIZE,	\
+				MT_MEMORY | MT_RW | MT_SECURE)
+#endif
+
 static const mmap_region_t poplar_mmap[] = {
 	MAP_DDR,
 	MAP_DEVICE,
+	MAP_TSP_MEM,
+#ifdef SPD_opteed
+	MAP_OPTEE_PAGEABLE,
+#endif
 	{0}
 };
 

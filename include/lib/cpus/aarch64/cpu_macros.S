@@ -1,13 +1,14 @@
 /*
- * Copyright (c) 2014-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2014-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
-#ifndef __CPU_MACROS_S__
-#define __CPU_MACROS_S__
+#ifndef CPU_MACROS_S
+#define CPU_MACROS_S
 
 #include <arch.h>
-#include <errata_report.h>
+#include <assert_macros.S>
+#include <lib/cpus/errata_report.h>
 
 #define CPU_IMPL_PN_MASK	(MIDR_IMPL_MASK << MIDR_IMPL_SHIFT) | \
 				(MIDR_PN_MASK << MIDR_PN_SHIFT)
@@ -18,8 +19,15 @@
 /* Special constant to specify that CPU has no reset function */
 #define CPU_NO_RESET_FUNC		0
 
+#define CPU_NO_EXTRA1_FUNC		0
+#define CPU_NO_EXTRA2_FUNC		0
+
 /* Word size for 64-bit CPUs */
 #define CPU_WORD_SIZE			8
+
+#if defined(IMAGE_BL1) || defined(IMAGE_BL31) ||(defined(IMAGE_BL2) && BL2_AT_EL3)
+#define IMAGE_AT_EL3
+#endif
 
 /*
  * Whether errata status needs reporting. Errata status is printed in debug
@@ -31,42 +39,58 @@
 # define REPORT_ERRATA	0
 #endif
 
-	/*
-	 * Define the offsets to the fields in cpu_ops structure.
-	 */
-	.struct 0
-CPU_MIDR: /* cpu_ops midr */
-	.space  8
-/* Reset fn is needed in BL at reset vector */
-#if defined(IMAGE_BL1) || defined(IMAGE_BL31)
-CPU_RESET_FUNC: /* cpu_ops reset_func */
-	.space  8
+
+	.equ	CPU_MIDR_SIZE, CPU_WORD_SIZE
+	.equ	CPU_EXTRA1_FUNC_SIZE, CPU_WORD_SIZE
+	.equ	CPU_EXTRA2_FUNC_SIZE, CPU_WORD_SIZE
+	.equ	CPU_E_HANDLER_FUNC_SIZE, CPU_WORD_SIZE
+	.equ	CPU_RESET_FUNC_SIZE, CPU_WORD_SIZE
+	.equ	CPU_PWR_DWN_OPS_SIZE, CPU_WORD_SIZE * CPU_MAX_PWR_DWN_OPS
+	.equ	CPU_ERRATA_FUNC_SIZE, CPU_WORD_SIZE
+	.equ	CPU_ERRATA_LOCK_SIZE, CPU_WORD_SIZE
+	.equ	CPU_ERRATA_PRINTED_SIZE, CPU_WORD_SIZE
+	.equ	CPU_REG_DUMP_SIZE, CPU_WORD_SIZE
+
+#ifndef IMAGE_AT_EL3
+	.equ	CPU_RESET_FUNC_SIZE, 0
 #endif
-#ifdef IMAGE_BL31 /* The power down core and cluster is needed only in BL31 */
-CPU_PWR_DWN_OPS: /* cpu_ops power down functions */
-	.space  (8 * CPU_MAX_PWR_DWN_OPS)
+
+/* The power down core and cluster is needed only in BL31 */
+#ifndef IMAGE_BL31
+	.equ	CPU_PWR_DWN_OPS_SIZE, 0
+#endif
+
+/* Fields required to print errata status. */
+#if !REPORT_ERRATA
+	.equ	CPU_ERRATA_FUNC_SIZE, 0
+#endif
+
+/* Only BL31 requieres mutual exclusion and printed flag.  */
+#if !(REPORT_ERRATA && defined(IMAGE_BL31))
+	.equ	CPU_ERRATA_LOCK_SIZE, 0
+	.equ	CPU_ERRATA_PRINTED_SIZE, 0
+#endif
+
+#if !defined(IMAGE_BL31) || !CRASH_REPORTING
+	.equ	CPU_REG_DUMP_SIZE, 0
 #endif
 
 /*
- * Fields required to print errata status. Only in BL31 that the printing
- * require mutual exclusion and printed flag.
+ * Define the offsets to the fields in cpu_ops structure.
+ * Every offset is defined based in the offset and size of the previous
+ * field.
  */
-#if REPORT_ERRATA
-CPU_ERRATA_FUNC:
-	.space	8
-#ifdef IMAGE_BL31
-CPU_ERRATA_LOCK:
-	.space	8
-CPU_ERRATA_PRINTED:
-	.space	8
-#endif
-#endif
-
-#if defined(IMAGE_BL31) && CRASH_REPORTING
-CPU_REG_DUMP: /* cpu specific register dump for crash reporting */
-	.space  8
-#endif
-CPU_OPS_SIZE = .
+	.equ	CPU_MIDR, 0
+	.equ	CPU_RESET_FUNC, CPU_MIDR + CPU_MIDR_SIZE
+	.equ	CPU_EXTRA1_FUNC, CPU_RESET_FUNC + CPU_RESET_FUNC_SIZE
+	.equ	CPU_EXTRA2_FUNC, CPU_EXTRA1_FUNC + CPU_EXTRA1_FUNC_SIZE
+	.equ	CPU_E_HANDLER_FUNC, CPU_EXTRA2_FUNC + CPU_EXTRA2_FUNC_SIZE
+	.equ	CPU_PWR_DWN_OPS, CPU_E_HANDLER_FUNC + CPU_E_HANDLER_FUNC_SIZE
+	.equ	CPU_ERRATA_FUNC, CPU_PWR_DWN_OPS + CPU_PWR_DWN_OPS_SIZE
+	.equ	CPU_ERRATA_LOCK, CPU_ERRATA_FUNC + CPU_ERRATA_FUNC_SIZE
+	.equ	CPU_ERRATA_PRINTED, CPU_ERRATA_LOCK + CPU_ERRATA_LOCK_SIZE
+	.equ	CPU_REG_DUMP, CPU_ERRATA_PRINTED + CPU_ERRATA_PRINTED_SIZE
+	.equ	CPU_OPS_SIZE, CPU_REG_DUMP + CPU_REG_DUMP_SIZE
 
 	/*
 	 * Write given expressions as quad words
@@ -109,6 +133,16 @@ CPU_OPS_SIZE = .
 	 * _resetfunc:
 	 *	Reset function for the CPU. If there's no CPU reset function,
 	 *	specify CPU_NO_RESET_FUNC
+	 * _extra1:
+	 *	This is a placeholder for future per CPU operations.  Currently,
+	 *	some CPUs use this entry to set a test function to determine if
+	 *	the workaround for CVE-2017-5715 needs to be applied or not.
+	 * _extra2:
+	 *	This is a placeholder for future per CPU operations.  Currently
+	 *	some CPUs use this entry to set a function to disable the
+	 *	workaround for CVE-2018-3639.
+	 * _e_handler:
+	 *	This is a placeholder for future per CPU exception handlers.
 	 * _power_down_ops:
 	 *	Comma-separated list of functions to perform power-down
 	 *	operatios on the CPU. At least one, and up to
@@ -118,31 +152,21 @@ CPU_OPS_SIZE = .
 	 *	CPU_MAX_PWR_DWN_OPS functions, the last specified one will be
 	 *	used to handle power down at subsequent levels
 	 */
-	.macro declare_cpu_ops _name:req, _midr:req, _resetfunc:req, \
-		_power_down_ops:vararg
+	.macro declare_cpu_ops_base _name:req, _midr:req, _resetfunc:req, \
+		_extra1:req, _extra2:req, _e_handler:req, _power_down_ops:vararg
 	.section cpu_ops, "a"
 	.align 3
 	.type cpu_ops_\_name, %object
 	.quad \_midr
-#if defined(IMAGE_BL1) || defined(IMAGE_BL31)
+#if defined(IMAGE_AT_EL3)
 	.quad \_resetfunc
 #endif
+	.quad \_extra1
+	.quad \_extra2
+	.quad \_e_handler
 #ifdef IMAGE_BL31
-1:
 	/* Insert list of functions */
 	fill_constants CPU_MAX_PWR_DWN_OPS, \_power_down_ops
-2:
-	/*
-	 * Error if no or more than CPU_MAX_PWR_DWN_OPS were specified in the
-	 * list
-	 */
-	.ifeq 2b - 1b
-	  .error "At least one power down function must be specified"
-	.else
-	  .iflt 2b - 1b - (CPU_MAX_PWR_DWN_OPS * CPU_WORD_SIZE)
-	    .error "More than CPU_MAX_PWR_DWN_OPS functions specified"
-	  .endif
-	.endif
 #endif
 
 #if REPORT_ERRATA
@@ -165,10 +189,9 @@ CPU_OPS_SIZE = .
 	.endif
 
 	/*
-	 * Weakly-bound, optional errata status printing function for CPUs of
+	 * Mandatory errata status printing function for CPUs of
 	 * this class.
 	 */
-	.weak \_name\()_errata_report
 	.quad \_name\()_errata_report
 
 #ifdef IMAGE_BL31
@@ -181,6 +204,25 @@ CPU_OPS_SIZE = .
 #if defined(IMAGE_BL31) && CRASH_REPORTING
 	.quad \_name\()_cpu_reg_dump
 #endif
+	.endm
+
+	.macro declare_cpu_ops _name:req, _midr:req, _resetfunc:req, \
+		_power_down_ops:vararg
+		declare_cpu_ops_base \_name, \_midr, \_resetfunc, 0, 0, 0, \
+			\_power_down_ops
+	.endm
+
+	.macro declare_cpu_ops_eh _name:req, _midr:req, _resetfunc:req, \
+		_e_handler:req, _power_down_ops:vararg
+		declare_cpu_ops_base \_name, \_midr, \_resetfunc, \
+			0, 0, \_e_handler, \_power_down_ops
+	.endm
+
+	.macro declare_cpu_ops_wa _name:req, _midr:req, \
+		_resetfunc:req, _extra1:req, _extra2:req, \
+		_power_down_ops:vararg
+		declare_cpu_ops_base \_name, \_midr, \_resetfunc, \
+			\_extra1, \_extra2, 0, \_power_down_ops
 	.endm
 
 #if REPORT_ERRATA
@@ -207,6 +249,7 @@ CPU_OPS_SIZE = .
 
 	/* Check whether errata applies */
 	mov	x0, \_rev_var
+	/* Shall clobber: x0-x7 */
 	bl	check_errata_\_id
 
 	.ifeq \_chosen
@@ -224,4 +267,44 @@ CPU_OPS_SIZE = .
 	.endm
 #endif
 
-#endif /* __CPU_MACROS_S__ */
+	/*
+	 * This macro is used on some CPUs to detect if they are vulnerable
+	 * to CVE-2017-5715.
+	 */
+	.macro	cpu_check_csv2 _reg _label
+	mrs	\_reg, id_aa64pfr0_el1
+	ubfx	\_reg, \_reg, #ID_AA64PFR0_CSV2_SHIFT, #ID_AA64PFR0_CSV2_LENGTH
+	/*
+	 * If the field equals 1, branch targets trained in one context cannot
+	 * affect speculative execution in a different context.
+	 *
+	 * If the field equals 2, it means that the system is also aware of
+	 * SCXTNUM_ELx register contexts. We aren't using them in the TF, so we
+	 * expect users of the registers to do the right thing.
+	 *
+	 * Only apply mitigations if the value of this field is 0.
+	 */
+#if ENABLE_ASSERTIONS
+	cmp	\_reg, #3 /* Only values 0 to 2 are expected */
+	ASM_ASSERT(lo)
+#endif
+
+	cmp	\_reg, #0
+	bne	\_label
+	.endm
+
+	/*
+	 * Helper macro that reads the part number of the current
+	 * CPU and jumps to the given label if it matches the CPU
+	 * MIDR provided.
+	 *
+	 * Clobbers x0.
+	 */
+	.macro  jump_if_cpu_midr _cpu_midr, _label
+	mrs	x0, midr_el1
+	ubfx	x0, x0, MIDR_PN_SHIFT, #12
+	cmp	w0, #((\_cpu_midr >> MIDR_PN_SHIFT) & MIDR_PN_MASK)
+	b.eq	\_label
+	.endm
+
+#endif /* CPU_MACROS_S */

@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <platform_def.h>
+
 #include <arch.h>
 #include <asm_macros.S>
-#include <bl_common.h>
+#include <common/bl_common.h>
 #include <cortex_a53.h>
 #include <cortex_a72.h>
 #include <plat_private.h>
-#include <platform_def.h>
 #include <plat_pmu_macros.S>
 
 	.globl	cpuson_entry_point
@@ -18,11 +19,10 @@
 	.globl	platform_cpu_warmboot
 	.globl	plat_secondary_cold_boot_setup
 	.globl	plat_report_exception
-	.globl	platform_is_primary_cpu
-	.globl	plat_crash_console_init
-	.globl	plat_crash_console_putc
+	.globl	plat_is_my_cpu_primary
 	.globl	plat_my_core_pos
 	.globl	plat_reset_handler
+	.globl	plat_panic_handler
 
 	/*
 	 * void plat_reset_handler(void);
@@ -74,38 +74,26 @@ cb_panic:
 	b	cb_panic
 endfunc plat_secondary_cold_boot_setup
 
-func platform_is_primary_cpu
+func plat_is_my_cpu_primary
+	mrs	x0, mpidr_el1
 	and	x0, x0, #(MPIDR_CLUSTER_MASK | MPIDR_CPU_MASK)
 	cmp	x0, #PLAT_RK_PRIMARY_CPU
 	cset	x0, eq
 	ret
-endfunc platform_is_primary_cpu
+endfunc plat_is_my_cpu_primary
 
 	/* --------------------------------------------------------------------
-	 * int plat_crash_console_init(void)
-	 * Function to initialize the crash console
-	 * without a C Runtime to print crash report.
-	 * Clobber list : x0, x1, x2
+	 * void plat_panic_handler(void)
+	 * Call system reset function on panic. Set up an emergency stack so we
+	 * can run C functions (it only needs to last for a few calls until we
+	 * reboot anyway).
 	 * --------------------------------------------------------------------
 	 */
-func plat_crash_console_init
-	mov_imm	x0, PLAT_RK_UART_BASE
-	mov_imm	x1, PLAT_RK_UART_CLOCK
-	mov_imm	x2, PLAT_RK_UART_BAUDRATE
-	b	console_core_init
-endfunc plat_crash_console_init
-
-	/* --------------------------------------------------------------------
-	 * int plat_crash_console_putc(void)
-	 * Function to print a character on the crash
-	 * console without a C Runtime.
-	 * Clobber list : x1, x2
-	 * --------------------------------------------------------------------
-	 */
-func plat_crash_console_putc
-	mov_imm x1, PLAT_RK_UART_BASE
-	b	console_core_putc
-endfunc plat_crash_console_putc
+func plat_panic_handler
+	msr	spsel, #0
+	bl	plat_set_my_stack
+	b	rockchip_soc_soft_reset
+endfunc plat_panic_handler
 
 	/* --------------------------------------------------------------------
 	 * void platform_cpu_warmboot (void);

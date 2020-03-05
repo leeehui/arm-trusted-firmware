@@ -1,15 +1,17 @@
 /*
- * Copyright (c) 2014, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2014-2018, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <assert.h>
-#include <io_driver.h>
-#include <io_storage.h>
-#include <semihosting.h>
 
+#include <platform_def.h>
 
+#include <drivers/io/io_driver.h>
+#include <drivers/io/io_semihosting.h>
+#include <drivers/io/io_storage.h>
+#include <lib/semihosting.h>
 
 /* Identify the device type as semihosting */
 static io_type_t device_type_sh(void)
@@ -23,7 +25,7 @@ static io_type_t device_type_sh(void)
 static int sh_dev_open(const uintptr_t dev_spec, io_dev_info_t **dev_info);
 static int sh_file_open(io_dev_info_t *dev_info, const uintptr_t spec,
 		io_entity_t *entity);
-static int sh_file_seek(io_entity_t *entity, int mode, ssize_t offset);
+static int sh_file_seek(io_entity_t *entity, int mode, signed long long offset);
 static int sh_file_len(io_entity_t *entity, size_t *length);
 static int sh_file_read(io_entity_t *entity, uintptr_t buffer, size_t length,
 		size_t *length_read);
@@ -88,7 +90,7 @@ static int sh_file_open(io_dev_info_t *dev_info __unused,
 
 
 /* Seek to a particular file offset on the semi-hosting device */
-static int sh_file_seek(io_entity_t *entity, int mode, ssize_t offset)
+static int sh_file_seek(io_entity_t *entity, int mode, signed long long offset)
 {
 	long file_handle, sh_result;
 
@@ -96,7 +98,7 @@ static int sh_file_seek(io_entity_t *entity, int mode, ssize_t offset)
 
 	file_handle = (long)entity->info;
 
-	sh_result = semihosting_file_seek(file_handle, offset);
+	sh_result = semihosting_file_seek(file_handle, (ssize_t)offset);
 
 	return (sh_result == 0) ? 0 : -ENOENT;
 }
@@ -132,7 +134,6 @@ static int sh_file_read(io_entity_t *entity, uintptr_t buffer, size_t length,
 	long file_handle;
 
 	assert(entity != NULL);
-	assert(buffer != (uintptr_t)NULL);
 	assert(length_read != NULL);
 
 	file_handle = (long)entity->info;
@@ -157,7 +158,6 @@ static int sh_file_write(io_entity_t *entity, const uintptr_t buffer,
 	size_t bytes = length;
 
 	assert(entity != NULL);
-	assert(buffer != (uintptr_t)NULL);
 	assert(length_written != NULL);
 
 	file_handle = (long)entity->info;

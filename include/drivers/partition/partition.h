@@ -1,14 +1,15 @@
 /*
- * Copyright (c) 2016, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2016-2018, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef __PARTITION_H__
-#define __PARTITION_H__
+#ifndef PARTITION_H
+#define PARTITION_H
 
-#include <cassert.h>
-#include <types.h>
+#include <stdint.h>
+
+#include <lib/cassert.h>
 
 #if !PLAT_PARTITION_MAX_ENTRIES
 # define PLAT_PARTITION_MAX_ENTRIES	128
@@ -16,7 +17,15 @@
 
 CASSERT(PLAT_PARTITION_MAX_ENTRIES <= 128, assert_plat_partition_max_entries);
 
-#define PARTITION_BLOCK_SIZE		512
+#if !PLAT_PARTITION_BLOCK_SIZE
+# define PLAT_PARTITION_BLOCK_SIZE	512
+#endif /* PLAT_PARTITION_BLOCK_SIZE */
+
+CASSERT((PLAT_PARTITION_BLOCK_SIZE == 512) ||
+	(PLAT_PARTITION_BLOCK_SIZE == 4096),
+	assert_plat_partition_block_size);
+
+#define LEGACY_PARTITION_BLOCK_SIZE	512
 
 #define EFI_NAMELEN			36
 
@@ -36,4 +45,4 @@ const partition_entry_t *get_partition_entry(const char *name);
 const partition_entry_list_t *get_partition_entry_list(void);
 void partition_init(unsigned int image_id);
 
-#endif	/* __PARTITION_H__ */
+#endif /* PARTITION_H */

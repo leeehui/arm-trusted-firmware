@@ -27,12 +27,12 @@
  */
 
 /*
- * Portions copyright (c) 2014, ARM Limited and Contributors.
+ * Portions copyright (c) 2014-2020, ARM Limited and Contributors.
  * All rights reserved.
  */
 
-#ifndef _SYS_UUID_H_
-#define _SYS_UUID_H_
+#ifndef UUID_H
+#define UUID_H
 
 /* Length of a node address (an IEEE 802 address). */
 #define	_UUID_NODE_LEN		6
@@ -48,15 +48,20 @@
  * A DCE 1.1 compatible source representation of UUIDs.
  */
 struct uuid {
-	uint32_t	time_low;
-	uint16_t	time_mid;
-	uint16_t	time_hi_and_version;
+	uint8_t		time_low[4];
+	uint8_t		time_mid[2];
+	uint8_t		time_hi_and_version[2];
 	uint8_t		clock_seq_hi_and_reserved;
 	uint8_t		clock_seq_low;
 	uint8_t		node[_UUID_NODE_LEN];
 };
 
+union uuid_helper_t {
+	struct uuid uuid_struct;
+	uint32_t word[4];
+};
+
 /* XXX namespace pollution? */
 typedef struct uuid uuid_t;
 
-#endif /* _SYS_UUID_H_ */
+#endif /* UUID_H */

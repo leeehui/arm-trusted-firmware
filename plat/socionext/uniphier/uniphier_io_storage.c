@@ -1,25 +1,32 @@
 /*
- * Copyright (c) 2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2017-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <assert.h>
 #include <errno.h>
-#include <firmware_image_package.h>
-#include <io/io_block.h>
-#include <io/io_driver.h>
-#include <io/io_fip.h>
-#include <io/io_memmap.h>
+#include <stdint.h>
+
 #include <platform_def.h>
-#include <types.h>
-#include <utils_def.h>
-#include <xlat_tables_v2.h>
+
+#include <drivers/io/io_block.h>
+#include <drivers/io/io_driver.h>
+#include <drivers/io/io_fip.h>
+#include <drivers/io/io_memmap.h>
+#include <lib/utils_def.h>
+#include <lib/xlat_tables/xlat_tables_v2.h>
+#include <tools_share/firmware_image_package.h>
 
 #include "uniphier.h"
 
-#define UNIPHIER_ROM_REGION_BASE	0x00000000
-#define UNIPHIER_ROM_REGION_SIZE	0x10000000
+#define UNIPHIER_ROM_REGION_BASE	0x00000000ULL
+#define UNIPHIER_ROM_REGION_SIZE	0x10000000ULL
+
+#define UNIPHIER_OCM_REGION_SIZE	0x00040000ULL
+
+#define UNIPHIER_BLOCK_BUF_OFFSET	0x04200000UL
+#define UNIPHIER_BLOCK_BUF_SIZE		0x00100000UL
 
 static const io_dev_connector_t *uniphier_fip_dev_con;
 static uintptr_t uniphier_fip_dev_handle;
@@ -184,17 +191,29 @@ static const struct uniphier_io_policy uniphier_io_policies[] = {
 #endif
 };
 
-static int uniphier_io_block_setup(size_t fip_offset, uintptr_t block_dev_spec)
+static int uniphier_io_block_setup(size_t fip_offset,
+				   struct io_block_dev_spec *block_dev_spec,
+				   size_t buffer_offset)
 {
 	int ret;
 
 	uniphier_fip_spec.offset = fip_offset;
 
+	block_dev_spec->buffer.offset = buffer_offset;
+	block_dev_spec->buffer.length = UNIPHIER_BLOCK_BUF_SIZE;
+
+	ret = mmap_add_dynamic_region(block_dev_spec->buffer.offset,
+				      block_dev_spec->buffer.offset,
+				      block_dev_spec->buffer.length,
+				      MT_MEMORY | MT_RW | MT_NS);
+	if (ret)
+		return ret;
+
 	ret = register_io_dev_block(&uniphier_backend_dev_con);
 	if (ret)
 		return ret;
 
-	return io_dev_open(uniphier_backend_dev_con, block_dev_spec,
+	return io_dev_open(uniphier_backend_dev_con, (uintptr_t)block_dev_spec,
 			   &uniphier_backend_dev_handle);
 }
 
@@ -229,41 +248,49 @@ static int uniphier_io_fip_setup(void)
 	return io_dev_open(uniphier_fip_dev_con, 0, &uniphier_fip_dev_handle);
 }
 
-static int uniphier_io_emmc_setup(unsigned int soc_id)
+static int uniphier_io_emmc_setup(unsigned int soc, size_t buffer_offset)
 {
-	uintptr_t block_dev_spec;
+	struct io_block_dev_spec *block_dev_spec;
 	int ret;
 
-	ret = uniphier_emmc_init(&block_dev_spec);
+	ret = uniphier_emmc_init(soc, &block_dev_spec);
 	if (ret)
 		return ret;
 
-	return uniphier_io_block_setup(0x20000, block_dev_spec);
+	return uniphier_io_block_setup(0x20000, block_dev_spec, buffer_offset);
 }
 
-static int uniphier_io_nand_setup(unsigned int soc_id)
+static int uniphier_io_nand_setup(unsigned int soc, size_t buffer_offset)
 {
-	uintptr_t block_dev_spec;
+	struct io_block_dev_spec *block_dev_spec;
 	int ret;
 
-	ret = uniphier_nand_init(&block_dev_spec);
+	ret = uniphier_nand_init(soc, &block_dev_spec);
 	if (ret)
 		return ret;
 
-	return uniphier_io_block_setup(0x20000, block_dev_spec);
+	return uniphier_io_block_setup(0x20000, block_dev_spec, buffer_offset);
 }
 
-static int uniphier_io_nor_setup(unsigned int soc_id)
+static int uniphier_io_nor_setup(unsigned int soc_id, size_t buffer_offset)
 {
 	return uniphier_io_memmap_setup(0x70000);
 }
 
-static int uniphier_io_usb_setup(unsigned int soc_id)
+static const uintptr_t uniphier_ocm_base[] = {
+	[UNIPHIER_SOC_LD11] = 0x30000000,
+	[UNIPHIER_SOC_LD20] = 0x30000000,
+	[UNIPHIER_SOC_PXS3] = 0x30000000,
+};
+
+static int uniphier_io_rom_api_setup(unsigned int soc)
 {
-	uintptr_t block_dev_spec;
+	uintptr_t ocm_base;
 	int ret;
 
-	/* use ROM API for loading images from USB storage */
+	assert(soc < ARRAY_SIZE(uniphier_ocm_base));
+	ocm_base = uniphier_ocm_base[soc];
+
 	ret = mmap_add_dynamic_region(UNIPHIER_ROM_REGION_BASE,
 				      UNIPHIER_ROM_REGION_BASE,
 				      UNIPHIER_ROM_REGION_SIZE,
@@ -271,23 +298,47 @@ static int uniphier_io_usb_setup(unsigned int soc_id)
 	if (ret)
 		return ret;
 
-	ret = uniphier_usb_init(soc_id, &block_dev_spec);
+	/*
+	 * on-chip SRAM region: should be DEVICE attribute because the USB
+	 * load functions provided by the ROM use this memory region as a work
+	 * area, but do not cater to cache coherency.
+	 */
+	ret = mmap_add_dynamic_region(ocm_base, ocm_base,
+				      UNIPHIER_OCM_REGION_SIZE,
+				      MT_DEVICE | MT_RW | MT_SECURE);
 	if (ret)
 		return ret;
 
-	return uniphier_io_block_setup(0x20000, block_dev_spec);
+	return 0;
 }
 
-static int (* const uniphier_io_setup_table[])(unsigned int) = {
+static int uniphier_io_usb_setup(unsigned int soc, size_t buffer_offset)
+{
+	struct io_block_dev_spec *block_dev_spec;
+	int ret;
+
+	/* use ROM API for loading images from USB storage */
+	ret = uniphier_io_rom_api_setup(soc);
+	if (ret)
+		return ret;
+
+	ret = uniphier_usb_init(soc, &block_dev_spec);
+	if (ret)
+		return ret;
+
+	return uniphier_io_block_setup(0x20000, block_dev_spec, buffer_offset);
+}
+
+static int (* const uniphier_io_setup_table[])(unsigned int, size_t) = {
 	[UNIPHIER_BOOT_DEVICE_EMMC] = uniphier_io_emmc_setup,
 	[UNIPHIER_BOOT_DEVICE_NAND] = uniphier_io_nand_setup,
 	[UNIPHIER_BOOT_DEVICE_NOR] = uniphier_io_nor_setup,
 	[UNIPHIER_BOOT_DEVICE_USB] = uniphier_io_usb_setup,
 };
 
-int uniphier_io_setup(unsigned int soc_id)
+int uniphier_io_setup(unsigned int soc_id, uintptr_t mem_base)
 {
-	int (*io_setup)(unsigned int soc_id);
+	int (*io_setup)(unsigned int soc_id, size_t buffer_offset);
 	unsigned int boot_dev;
 	int ret;
 
@@ -296,7 +347,7 @@ int uniphier_io_setup(unsigned int soc_id)
 		return -EINVAL;
 
 	io_setup = uniphier_io_setup_table[boot_dev];
-	ret = io_setup(soc_id);
+	ret = io_setup(soc_id, mem_base + UNIPHIER_BLOCK_BUF_OFFSET);
 	if (ret)
 		return ret;
 
@@ -314,27 +365,9 @@ int plat_get_image_source(unsigned int image_id, uintptr_t *dev_handle,
 
 	assert(image_id < ARRAY_SIZE(uniphier_io_policies));
 
-	*dev_handle = *(uniphier_io_policies[image_id].dev_handle);
+	*dev_handle = *uniphier_io_policies[image_id].dev_handle;
 	*image_spec = uniphier_io_policies[image_id].image_spec;
 	init_params = uniphier_io_policies[image_id].init_params;
 
 	return io_dev_init(*dev_handle, init_params);
-}
-
-int uniphier_check_image(unsigned int image_id)
-{
-	uintptr_t dev_handle, image_spec, image_handle;
-	int ret;
-
-	ret = plat_get_image_source(image_id, &dev_handle, &image_spec);
-	if (ret)
-		return ret;
-
-	ret = io_open(dev_handle, image_spec, &image_handle);
-	if (ret)
-		return ret;
-
-	io_close(image_handle);
-
-	return 0;
 }

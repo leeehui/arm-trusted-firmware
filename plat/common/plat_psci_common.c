@@ -1,28 +1,28 @@
 /*
- * Copyright (c) 2016-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2016-2019, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2020, NVIDIA Corporation. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch.h>
 #include <assert.h>
-#include <platform.h>
-#include <pmf.h>
-#include <psci.h>
+
+#include <arch.h>
+#include <lib/pmf/pmf.h>
+#include <lib/psci/psci.h>
+#include <lib/utils_def.h>
+#include <plat/common/platform.h>
 
 #if ENABLE_PSCI_STAT && ENABLE_PMF
 #pragma weak plat_psci_stat_accounting_start
 #pragma weak plat_psci_stat_accounting_stop
 #pragma weak plat_psci_stat_get_residency
 
-/* Ticks elapsed in one second by a signal of 1 MHz */
-#define MHZ_TICKS_PER_SEC 1000000
-
 /* Maximum time-stamp value read from architectural counters */
-#ifdef AARCH32
-#define MAX_TS	UINT32_MAX
-#else
+#ifdef __aarch64__
 #define MAX_TS	UINT64_MAX
+#else
+#define MAX_TS	UINT32_MAX
 #endif
 
 /* Following are used as ID's to capture time-stamp */
@@ -30,6 +30,8 @@
 #define PSCI_STAT_ID_EXIT_LOW_PWR		1
 #define PSCI_STAT_TOTAL_IDS			2
 
+PMF_DECLARE_CAPTURE_TIMESTAMP(psci_svc)
+PMF_DECLARE_GET_TIMESTAMP(psci_svc)
 PMF_REGISTER_SERVICE(psci_svc, PMF_PSCI_STAT_SVC_ID, PSCI_STAT_TOTAL_IDS,
 	PMF_STORE_ENABLE)
 
@@ -49,7 +51,7 @@ static u_register_t calc_stat_residency(unsigned long long pwrupts,
 	 * convert time-stamp into microseconds.
 	 */
 	residency_div = read_cntfrq_el0() / MHZ_TICKS_PER_SEC;
-	assert(residency_div);
+	assert(residency_div > 0U);
 
 	if (pwrupts < pwrdnts)
 		res = MAX_TS - pwrdnts + pwrupts;
@@ -67,7 +69,7 @@ static u_register_t calc_stat_residency(unsigned long long pwrupts,
 void plat_psci_stat_accounting_start(
 	__unused const psci_power_state_t *state_info)
 {
-	assert(state_info);
+	assert(state_info != NULL);
 	PMF_CAPTURE_TIMESTAMP(psci_svc, PSCI_STAT_ID_ENTER_LOW_PWR,
 		PMF_NO_CACHE_MAINT);
 }
@@ -80,7 +82,7 @@ void plat_psci_stat_accounting_start(
 void plat_psci_stat_accounting_stop(
 	__unused const psci_power_state_t *state_info)
 {
-	assert(state_info);
+	assert(state_info != NULL);
 	PMF_CAPTURE_TIMESTAMP(psci_svc, PSCI_STAT_ID_EXIT_LOW_PWR,
 		PMF_NO_CACHE_MAINT);
 }
@@ -91,15 +93,15 @@ void plat_psci_stat_accounting_stop(
  */
 u_register_t plat_psci_stat_get_residency(unsigned int lvl,
 	const psci_power_state_t *state_info,
-	int last_cpu_idx)
+	unsigned int last_cpu_idx)
 {
 	plat_local_state_t state;
 	unsigned long long pwrup_ts = 0, pwrdn_ts = 0;
 	unsigned int pmf_flags;
 
-	assert(lvl >= PSCI_CPU_PWR_LVL && lvl <= PLAT_MAX_PWR_LVL);
-	assert(state_info);
-	assert(last_cpu_idx >= 0 && last_cpu_idx <= PLATFORM_CORE_COUNT);
+	assert((lvl >= PSCI_CPU_PWR_LVL) && (lvl <= PLAT_MAX_PWR_LVL));
+	assert(state_info != NULL);
+	assert(last_cpu_idx <= PLATFORM_CORE_COUNT);
 
 	if (lvl == PSCI_CPU_PWR_LVL)
 		assert(last_cpu_idx == plat_my_core_pos());
@@ -110,10 +112,10 @@ u_register_t plat_psci_stat_get_residency(unsigned int lvl,
 	 * when reading the timestamp.
 	 */
 	state = state_info->pwr_domain_state[PSCI_CPU_PWR_LVL];
-	if (is_local_state_off(state)) {
+	if (is_local_state_off(state) != 0) {
 		pmf_flags = PMF_CACHE_MAINT;
 	} else {
-		assert(is_local_state_retn(state));
+		assert(is_local_state_retn(state) == 1);
 		pmf_flags = PMF_NO_CACHE_MAINT;
 	}
 
@@ -150,14 +152,18 @@ plat_local_state_t plat_get_target_pwr_state(unsigned int lvl,
 					     unsigned int ncpu)
 {
 	plat_local_state_t target = PLAT_MAX_OFF_STATE, temp;
+	const plat_local_state_t *st = states;
+	unsigned int n = ncpu;
 
-	assert(ncpu);
+	assert(ncpu > 0U);
 
 	do {
-		temp = *states++;
+		temp = *st;
+		st++;
 		if (temp < target)
 			target = temp;
-	} while (--ncpu);
+		n--;
+	} while (n > 0U);
 
 	return target;
 }

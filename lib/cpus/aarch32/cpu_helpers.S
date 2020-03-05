@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2016-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -7,10 +7,11 @@
 #include <arch.h>
 #include <asm_macros.S>
 #include <assert_macros.S>
-#include <cpu_data.h>
 #include <cpu_macros.S>
+#include <common/bl_common.h>
+#include <lib/el3_runtime/cpu_data.h>
 
-#if defined(IMAGE_BL1) || defined(IMAGE_BL32)
+#if defined(IMAGE_BL1) || defined(IMAGE_BL32) || (defined(IMAGE_BL2) && BL2_AT_EL3)
 	/*
 	 * The reset handler common to all platforms.  After a matching
 	 * cpu_ops structure entry is found, the correponding reset_handler
@@ -21,9 +22,9 @@
 	 */
 	.globl	reset_handler
 func reset_handler
-	mov	r10, lr
+	mov	r8, lr
 
-	/* The plat_reset_handler can clobber r0 - r9 */
+	/* The plat_reset_handler can clobber r0 - r7 */
 	bl	plat_reset_handler
 
 	/* Get the matching cpu_ops pointer (clobbers: r0 - r5) */
@@ -37,12 +38,12 @@ func reset_handler
 	/* Get the cpu_ops reset handler */
 	ldr	r1, [r0, #CPU_RESET_FUNC]
 	cmp	r1, #0
-	mov	lr, r10
+	mov	lr, r8
 	bxne	r1
 	bx	lr
 endfunc reset_handler
 
-#endif /* IMAGE_BL1 || IMAGE_BL32 */
+#endif
 
 #ifdef IMAGE_BL32 /* The power down core and cluster is needed only in  BL32 */
 	/*
@@ -206,7 +207,8 @@ endfunc cpu_rev_var_hs
  */
 	.globl print_errata_status
 func print_errata_status
-	push	{r4, lr}
+	/* r12 is pushed only for the sake of 8-byte stack alignment */
+	push	{r4, r5, r12, lr}
 #ifdef IMAGE_BL1
 	/*
 	 * BL1 doesn't have per-CPU data. So retrieve the CPU operations
@@ -241,6 +243,6 @@ func print_errata_status
 	blxne	r4
 1:
 #endif
-	pop	{r4, pc}
+	pop	{r4, r5, r12, pc}
 endfunc print_errata_status
 #endif

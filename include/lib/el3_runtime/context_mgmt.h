@@ -1,17 +1,17 @@
 /*
- * Copyright (c) 2013-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef __CM_H__
-#define __CM_H__
+#ifndef CONTEXT_MGMT_H
+#define CONTEXT_MGMT_H
 
-#ifndef AARCH32
-#include <arch.h>
 #include <assert.h>
+#include <context.h>
 #include <stdint.h>
-#endif
+
+#include <arch.h>
 
 /*******************************************************************************
  * Forward declarations
@@ -32,9 +32,10 @@ void cm_set_context(void *context, uint32_t security_state);
 void cm_init_my_context(const struct entry_point_info *ep);
 void cm_init_context_by_index(unsigned int cpu_idx,
 			      const struct entry_point_info *ep);
+void cm_setup_context(cpu_context_t *ctx, const entry_point_info_t *ep);
 void cm_prepare_el3_exit(uint32_t security_state);
 
-#ifndef AARCH32
+#ifdef __aarch64__
 void cm_el1_sysregs_context_save(uint32_t security_state);
 void cm_el1_sysregs_context_restore(uint32_t security_state);
 void cm_set_elr_el3(uint32_t security_state, uintptr_t entrypoint);
@@ -44,17 +45,7 @@ void cm_write_scr_el3_bit(uint32_t security_state,
 			  uint32_t bit_pos,
 			  uint32_t value);
 void cm_set_next_eret_context(uint32_t security_state);
-uint32_t cm_get_scr_el3(uint32_t security_state);
-
-
-void cm_init_context(uint64_t mpidr,
-		     const struct entry_point_info *ep) __deprecated;
-
-void *cm_get_context_by_mpidr(uint64_t mpidr,
-			      uint32_t security_state) __deprecated;
-void cm_set_context_by_mpidr(uint64_t mpidr,
-			     void *context,
-			     uint32_t security_state) __deprecated;
+u_register_t cm_get_scr_el3(uint32_t security_state);
 
 /* Inline definitions */
 
@@ -87,6 +78,6 @@ static inline void cm_set_next_context(void *context)
 #else
 void *cm_get_next_context(void);
 void cm_set_next_context(void *context);
-#endif /* AARCH32 */
+#endif /* __aarch64__ */
 
-#endif /* __CM_H__ */
+#endif /* CONTEXT_MGMT_H */

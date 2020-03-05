@@ -1,15 +1,13 @@
 /*
- * Copyright (c) 2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2017-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
-#ifndef __ARM_SPM_DEF_H__
-#define __ARM_SPM_DEF_H__
+#ifndef ARM_SPM_DEF_H
+#define ARM_SPM_DEF_H
 
-#include <arm_def.h>
-#include <platform_def.h>
-#include <utils_def.h>
-#include <xlat_tables_defs.h>
+#include <lib/utils_def.h>
+#include <lib/xlat_tables/xlat_tables_defs.h>
 
 /*
  * If BL31 is placed in DRAM, place the Secure Partition in DRAM right after the
@@ -28,6 +26,7 @@
 						ARM_SP_IMAGE_SIZE,		\
 						MT_MEMORY | MT_RW | MT_SECURE)
 #endif
+
 #ifdef IMAGE_BL31
 /* SPM Payload memory. Mapped as code in S-EL1 */
 #define ARM_SP_IMAGE_MMAP		MAP_REGION2(				\
@@ -62,23 +61,22 @@
  * requests. Mapped as RW and NS. Placed after the shared memory between EL3 and
  * S-EL0.
  */
-#define ARM_SP_IMAGE_NS_BUF_BASE	(PLAT_SPM_BUF_BASE + PLAT_SPM_BUF_SIZE)
-#define ARM_SP_IMAGE_NS_BUF_SIZE	ULL(0x10000)
+#define PLAT_SP_IMAGE_NS_BUF_BASE	(PLAT_SPM_BUF_BASE + PLAT_SPM_BUF_SIZE)
+#define PLAT_SP_IMAGE_NS_BUF_SIZE	ULL(0x10000)
 #define ARM_SP_IMAGE_NS_BUF_MMAP	MAP_REGION2(				\
-						ARM_SP_IMAGE_NS_BUF_BASE,	\
-						ARM_SP_IMAGE_NS_BUF_BASE,	\
-						ARM_SP_IMAGE_NS_BUF_SIZE,	\
+						PLAT_SP_IMAGE_NS_BUF_BASE,	\
+						PLAT_SP_IMAGE_NS_BUF_BASE,	\
+						PLAT_SP_IMAGE_NS_BUF_SIZE,	\
 						MT_RW_DATA | MT_NS | MT_USER,	\
 						PAGE_SIZE)
 
 /*
  * RW memory, which uses the remaining Trusted DRAM. Placed after the memory
- * shared between Secure and Non-secure worlds. First there is the stack memory
- * for all CPUs and then there is the common heap memory. Both are mapped with
- * RW permissions.
+ * shared between Secure and Non-secure worlds, or after the platform specific
+ * buffers, if defined. First there is the stack memory for all CPUs and then
+ * there is the common heap memory. Both are mapped with RW permissions.
  */
-#define PLAT_SP_IMAGE_STACK_BASE	(ARM_SP_IMAGE_NS_BUF_BASE +		\
-						ARM_SP_IMAGE_NS_BUF_SIZE)
+#define PLAT_SP_IMAGE_STACK_BASE	PLAT_ARM_SP_IMAGE_STACK_BASE
 #define PLAT_SP_IMAGE_STACK_PCPU_SIZE	ULL(0x2000)
 #define ARM_SP_IMAGE_STACK_TOTAL_SIZE	(PLATFORM_CORE_COUNT *			\
 					 PLAT_SP_IMAGE_STACK_PCPU_SIZE)
@@ -98,14 +96,8 @@
 /* Total number of memory regions with distinct properties */
 #define ARM_SP_IMAGE_NUM_MEM_REGIONS	6
 
-/*
- * Name of the section to put the translation tables used by the S-EL1/S-EL0
- * context of a Secure Partition.
- */
-#define PLAT_SP_IMAGE_XLAT_SECTION_NAME	"arm_el3_tzc_dram"
-
 /* Cookies passed to the Secure Partition at boot. Not used by ARM platforms. */
 #define PLAT_SPM_COOKIE_0		ULL(0)
 #define PLAT_SPM_COOKIE_1		ULL(0)
 
-#endif /* __ARM_SPM_DEF_H__ */
+#endif /* ARM_SPM_DEF_H */

@@ -1,15 +1,17 @@
 /*
- * Copyright (c) 2013-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <platform_def.h>
+
 #include <arch.h>
-#include <bl_common.h>
+#include <common/bl_common.h>
 #include <el3_common_macros.S>
-#include <pmf_asm_macros.S>
-#include <runtime_instr.h>
-#include <xlat_tables_defs.h>
+#include <lib/pmf/aarch64/pmf_asm_macros.S>
+#include <lib/runtime_instr.h>
+#include <lib/xlat_tables/xlat_mmu_helpers.h>
 
 	.globl	bl31_entrypoint
 	.globl	bl31_warm_entrypoint
@@ -21,16 +23,16 @@
 	 */
 
 func bl31_entrypoint
-#if !RESET_TO_BL31
 	/* ---------------------------------------------------------------
-	 * Preceding bootloader has populated x0 with a pointer to a
-	 * 'bl31_params' structure & x1 with a pointer to platform
-	 * specific structure
+	 * Stash the previous bootloader arguments x0 - x3 for later use.
 	 * ---------------------------------------------------------------
 	 */
 	mov	x20, x0
 	mov	x21, x1
+	mov	x22, x2
+	mov	x23, x3
 
+#if !RESET_TO_BL31
 	/* ---------------------------------------------------------------------
 	 * For !RESET_TO_BL31 systems, only the primary CPU ever reaches
 	 * bl31_entrypoint() during the cold boot flow, so the cold/warm boot
@@ -46,15 +48,10 @@ func bl31_entrypoint
 		_secondary_cold_boot=0				\
 		_init_memory=0					\
 		_init_c_runtime=1				\
-		_exception_vectors=runtime_exceptions
-
-	/* ---------------------------------------------------------------------
-	 * Relay the previous bootloader's arguments to the platform layer
-	 * ---------------------------------------------------------------------
-	 */
-	mov	x0, x20
-	mov	x1, x21
+		_exception_vectors=runtime_exceptions		\
+		_pie_fixup_size=BL31_LIMIT - BL31_BASE
 #else
+
 	/* ---------------------------------------------------------------------
 	 * For RESET_TO_BL31 systems which have a programmable reset address,
 	 * bl31_entrypoint() is executed only on the cold boot path so we can
@@ -67,7 +64,8 @@ func bl31_entrypoint
 		_secondary_cold_boot=!COLD_BOOT_SINGLE_CPU	\
 		_init_memory=1					\
 		_init_c_runtime=1				\
-		_exception_vectors=runtime_exceptions
+		_exception_vectors=runtime_exceptions		\
+		_pie_fixup_size=BL31_LIMIT - BL31_BASE
 
 	/* ---------------------------------------------------------------------
 	 * For RESET_TO_BL31 systems, BL31 is the first bootloader to run so
@@ -75,37 +73,54 @@ func bl31_entrypoint
 	 * arguments passed to the platform layer to reflect that.
 	 * ---------------------------------------------------------------------
 	 */
-	mov	x0, 0
-	mov	x1, 0
+	mov	x20, 0
+	mov	x21, 0
+	mov	x22, 0
+	mov	x23, 0
 #endif /* RESET_TO_BL31 */
 
-	/* ---------------------------------------------
-	 * Perform platform specific early arch. setup
-	 * ---------------------------------------------
+	/* --------------------------------------------------------------------
+	 * Perform BL31 setup
+	 * --------------------------------------------------------------------
 	 */
-	bl	bl31_early_platform_setup
-	bl	bl31_plat_arch_setup
+	mov	x0, x20
+	mov	x1, x21
+	mov	x2, x22
+	mov	x3, x23
+	bl	bl31_setup
 
-	/* ---------------------------------------------
-	 * Jump to main function.
-	 * ---------------------------------------------
+#if ENABLE_PAUTH
+	/* --------------------------------------------------------------------
+	 * Program APIAKey_EL1 and enable pointer authentication
+	 * --------------------------------------------------------------------
+	 */
+	bl	pauth_init_enable_el3
+#endif /* ENABLE_PAUTH */
+
+	/* --------------------------------------------------------------------
+	 * Jump to main function
+	 * --------------------------------------------------------------------
 	 */
 	bl	bl31_main
 
-	/* -------------------------------------------------------------
+	/* --------------------------------------------------------------------
 	 * Clean the .data & .bss sections to main memory. This ensures
 	 * that any global data which was initialised by the primary CPU
 	 * is visible to secondary CPUs before they enable their data
 	 * caches and participate in coherency.
-	 * -------------------------------------------------------------
+	 * --------------------------------------------------------------------
 	 */
-	adr	x0, __DATA_START__
-	adr	x1, __DATA_END__
+	adrp	x0, __DATA_START__
+	add	x0, x0, :lo12:__DATA_START__
+	adrp	x1, __DATA_END__
+	add	x1, x1, :lo12:__DATA_END__
 	sub	x1, x1, x0
 	bl	clean_dcache_range
 
-	adr	x0, __BSS_START__
-	adr	x1, __BSS_END__
+	adrp	x0, __BSS_START__
+	add	x0, x0, :lo12:__BSS_START__
+	adrp	x1, __BSS_END__
+	add	x1, x1, :lo12:__BSS_END__
 	sub	x1, x1, x0
 	bl	clean_dcache_range
 
@@ -126,7 +141,7 @@ func bl31_warm_entrypoint
 	 * timestamp collection will need to do cache maintenance prior
 	 * to timestamp update.
 	 */
-	pmf_calc_timestamp_addr rt_instr_svc RT_INSTR_EXIT_HW_LOW_PWR
+	pmf_calc_timestamp_addr rt_instr_svc, RT_INSTR_EXIT_HW_LOW_PWR
 	mrs	x1, cntpct_el0
 	str	x1, [x0]
 #endif
@@ -154,7 +169,8 @@ func bl31_warm_entrypoint
 		_secondary_cold_boot=0				\
 		_init_memory=0					\
 		_init_c_runtime=0				\
-		_exception_vectors=runtime_exceptions
+		_exception_vectors=runtime_exceptions		\
+		_pie_fixup_size=0
 
 	/*
 	 * We're about to enable MMU and participate in PSCI state coordination.
@@ -172,20 +188,25 @@ func bl31_warm_entrypoint
 	 * enter coherency (as CPUs already are); and there's no reason to have
 	 * caches disabled either.
 	 */
+#if HW_ASSISTED_COHERENCY || WARMBOOT_ENABLE_DCACHE_EARLY
+	mov	x0, xzr
+#else
 	mov	x0, #DISABLE_DCACHE
+#endif
 	bl	bl31_plat_enable_mmu
 
-#if HW_ASSISTED_COHERENCY || WARMBOOT_ENABLE_DCACHE_EARLY
-	mrs	x0, sctlr_el3
-	orr	x0, x0, #SCTLR_C_BIT
-	msr	sctlr_el3, x0
-	isb
-#endif
+#if ENABLE_PAUTH
+	/* --------------------------------------------------------------------
+	 * Program APIAKey_EL1 and enable pointer authentication
+	 * --------------------------------------------------------------------
+	 */
+	bl	pauth_init_enable_el3
+#endif /* ENABLE_PAUTH */
 
 	bl	psci_warmboot_entrypoint
 
 #if ENABLE_RUNTIME_INSTRUMENTATION
-	pmf_calc_timestamp_addr rt_instr_svc RT_INSTR_EXIT_PSCI
+	pmf_calc_timestamp_addr rt_instr_svc, RT_INSTR_EXIT_PSCI
 	mov	x19, x0
 
 	/*

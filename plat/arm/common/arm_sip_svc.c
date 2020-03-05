@@ -1,27 +1,38 @@
 /*
- * Copyright (c) 2016-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2016-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arm_sip_svc.h>
-#include <debug.h>
-#include <plat_arm.h>
-#include <pmf.h>
-#include <runtime_svc.h>
 #include <stdint.h>
-#include <uuid.h>
 
+#include <common/debug.h>
+#include <common/runtime_svc.h>
+#include <lib/debugfs.h>
+#include <lib/pmf/pmf.h>
+#include <plat/arm/common/arm_sip_svc.h>
+#include <plat/arm/common/plat_arm.h>
+#include <tools_share/uuid.h>
 
 /* ARM SiP Service UUID */
-DEFINE_SVC_UUID(arm_sip_svc_uid,
-		0xe2756d55, 0x3360, 0x4bb5, 0xbf, 0xf3,
-		0x62, 0x79, 0xfd, 0x11, 0x37, 0xff);
+DEFINE_SVC_UUID2(arm_sip_svc_uid,
+	0x556d75e2, 0x6033, 0xb54b, 0xb5, 0x75,
+	0x62, 0x79, 0xfd, 0x11, 0x37, 0xff);
 
 static int arm_sip_setup(void)
 {
-	if (pmf_setup() != 0)
+	if (pmf_setup() != 0) {
 		return 1;
+	}
+
+#if USE_DEBUGFS
+
+	if (debugfs_smc_setup() != 0) {
+		return 1;
+	}
+
+#endif /* USE_DEBUGFS */
+
 	return 0;
 }
 
@@ -48,25 +59,33 @@ static uintptr_t arm_sip_handler(unsigned int smc_fid,
 				handle, flags);
 	}
 
+#if USE_DEBUGFS
+
+	if (is_debugfs_fid(smc_fid)) {
+		return debugfs_smc_handler(smc_fid, x1, x2, x3, x4, cookie,
+					   handle, flags);
+	}
+
+#endif /* USE_DEBUGFS */
+
 	switch (smc_fid) {
 	case ARM_SIP_SVC_EXE_STATE_SWITCH: {
-		u_register_t pc;
-
+		/* Execution state can be switched only if EL3 is AArch64 */
+#ifdef __aarch64__
 		/* Allow calls from non-secure only */
 		if (!is_caller_non_secure(flags))
 			SMC_RET1(handle, STATE_SW_E_DENIED);
 
-		/* Validate supplied entry point */
-		pc = (u_register_t) ((x1 << 32) | (uint32_t) x2);
-		if (arm_validate_ns_entrypoint(pc))
-			SMC_RET1(handle, STATE_SW_E_PARAM);
-
 		/*
 		 * Pointers used in execution state switch are all 32 bits wide
 		 */
-		return arm_execution_state_switch(smc_fid, (uint32_t) x1,
-				(uint32_t) x2, (uint32_t) x3, (uint32_t) x4,
-				handle);
+		return (uintptr_t) arm_execution_state_switch(smc_fid,
+				(uint32_t) x1, (uint32_t) x2, (uint32_t) x3,
+				(uint32_t) x4, handle);
+#else
+		/* State switch denied */
+		SMC_RET1(handle, STATE_SW_E_DENIED);
+#endif /* __aarch64__ */
 		}
 
 	case ARM_SIP_SVC_CALL_COUNT:

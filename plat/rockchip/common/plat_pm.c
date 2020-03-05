@@ -1,18 +1,21 @@
 /*
- * Copyright (c) 2013-2016, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
 #include <assert.h>
-#include <console.h>
-#include <debug.h>
-#include <delay_timer.h>
 #include <errno.h>
-#include <plat_private.h>
+
 #include <platform_def.h>
-#include <psci.h>
+
+#include <arch_helpers.h>
+#include <common/debug.h>
+#include <drivers/console.h>
+#include <drivers/delay_timer.h>
+#include <lib/psci/psci.h>
+
+#include <plat_private.h>
 
 /* Macros to read the rk power domain state */
 #define RK_CORE_PWR_STATE(state) \
@@ -179,7 +182,7 @@ void rockchip_get_sys_suspend_power_state(psci_power_state_t *req_state)
  ******************************************************************************/
 void rockchip_cpu_standby(plat_local_state_t cpu_state)
 {
-	unsigned int scr;
+	u_register_t scr;
 
 	assert(cpu_state == PLAT_MAX_RET_STATE);
 
@@ -246,13 +249,13 @@ void rockchip_pwr_domain_suspend(const psci_power_state_t *target_state)
 	if (RK_CORE_PWR_STATE(target_state) != PLAT_MAX_OFF_STATE)
 		return;
 
+	/* Prevent interrupts from spuriously waking up this cpu */
+	plat_rockchip_gic_cpuif_disable();
+
 	if (RK_SYSTEM_PWR_STATE(target_state) == PLAT_MAX_OFF_STATE)
 		rockchip_soc_sys_pwr_dm_suspend();
 	else
 		rockchip_soc_cores_pwr_dm_suspend();
-
-	/* Prevent interrupts from spuriously waking up this cpu */
-	plat_rockchip_gic_cpuif_disable();
 
 	/* Perform the common cluster specific operations */
 	if (RK_CLUSTER_PWR_STATE(target_state) == PLAT_MAX_OFF_STATE)

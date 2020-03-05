@@ -3,13 +3,16 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
+
+#include <common/debug.h>
+#include <common/runtime_svc.h>
+#include <lib/mmio.h>
+
 #include <crypt.h>
-#include <debug.h>
-#include <mmio.h>
 #include <mtcmos.h>
 #include <mtk_sip_svc.h>
 #include <plat_sip_calls.h>
-#include <runtime_svc.h>
+#include <wdt.h>
 
 /* Authorized secure register list */
 enum {
@@ -99,6 +102,9 @@ uint64_t mediatek_plat_sip_handler(uint32_t smc_fid,
 	case MTK_SIP_CLR_HDCP_KEY:
 		ret = crypt_clear_hdcp_key();
 		SMC_RET1(handle, ret);
+
+	case MTK_SIP_SMC_WATCHDOG:
+		return wdt_smc_handler(x1, x2, handle);
 
 	default:
 		ERROR("%s: unhandled SMC (0x%x)\n", __func__, smc_fid);

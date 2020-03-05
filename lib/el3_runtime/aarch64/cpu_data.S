@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2014-2016, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2014-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <asm_macros.S>
-#include <cpu_data.h>
+#include <lib/el3_runtime/cpu_data.h>
 
 .globl	init_cpu_data_ptr
 .globl	_cpu_data_by_index
@@ -41,7 +41,8 @@ endfunc init_cpu_data_ptr
 func _cpu_data_by_index
 	mov_imm	x1, CPU_DATA_SIZE
 	mul	x0, x0, x1
-	adr	x1, percpu_data
+	adrp	x1, percpu_data
+	add	x1, x1, :lo12:percpu_data
 	add	x0, x0, x1
 	ret
 endfunc _cpu_data_by_index

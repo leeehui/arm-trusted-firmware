@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -14,19 +14,22 @@
  * handle the request locally or delegate it to the Secure Payload. It is also
  * responsible for initialising and maintaining communication with the SP.
  ******************************************************************************/
-#include <arch_helpers.h>
 #include <assert.h>
-#include <bl31.h>
-#include <bl_common.h>
-#include <context_mgmt.h>
-#include <debug.h>
 #include <errno.h>
-#include <platform.h>
-#include <runtime_svc.h>
 #include <stddef.h>
 #include <string.h>
-#include <tsp.h>
-#include <uuid.h>
+
+#include <arch_helpers.h>
+#include <bl31/bl31.h>
+#include <bl31/ehf.h>
+#include <bl32/tsp/tsp.h>
+#include <common/bl_common.h>
+#include <common/debug.h>
+#include <common/runtime_svc.h>
+#include <lib/el3_runtime/context_mgmt.h>
+#include <plat/common/platform.h>
+#include <tools_share/uuid.h>
+
 #include "tspd_private.h"
 
 /*******************************************************************************
@@ -42,9 +45,9 @@ tsp_context_t tspd_sp_context[TSPD_CORE_COUNT];
 
 
 /* TSP UID */
-DEFINE_SVC_UUID(tsp_uuid,
-		0x5b3056a0, 0x3291, 0x427b, 0x98, 0x11,
-		0x71, 0x68, 0xca, 0x50, 0xf3, 0xfa);
+DEFINE_SVC_UUID2(tsp_uuid,
+	0xa056305b, 0x9132, 0x7b42, 0x98, 0x11,
+	0x71, 0x68, 0xca, 0x50, 0xf3, 0xfa);
 
 int32_t tspd_init(void);
 
@@ -123,7 +126,7 @@ static uint64_t tspd_sel1_interrupt_handler(uint32_t id,
 	 * interrupt handling.
 	 */
 	if (get_yield_smc_active_flag(tsp_ctx->state)) {
-		tsp_ctx->saved_spsr_el3 = SMC_GET_EL3(&tsp_ctx->cpu_ctx,
+		tsp_ctx->saved_spsr_el3 = (uint32_t)SMC_GET_EL3(&tsp_ctx->cpu_ctx,
 						      CTX_SPSR_EL3);
 		tsp_ctx->saved_elr_el3 = SMC_GET_EL3(&tsp_ctx->cpu_ctx,
 						     CTX_ELR_EL3);
@@ -178,7 +181,7 @@ static uint64_t tspd_ns_interrupt_handler(uint32_t id,
  * (aarch32/aarch64) if not already known and initialises the context for entry
  * into the SP for its initialisation.
  ******************************************************************************/
-int32_t tspd_setup(void)
+static int32_t tspd_setup(void)
 {
 	entry_point_info_t *tsp_ep_info;
 	uint32_t linear_id;
@@ -272,14 +275,14 @@ int32_t tspd_init(void)
  * will also return any information that the secure payload needs to do the
  * work assigned to it.
  ******************************************************************************/
-uint64_t tspd_smc_handler(uint32_t smc_fid,
-			 uint64_t x1,
-			 uint64_t x2,
-			 uint64_t x3,
-			 uint64_t x4,
+static uintptr_t tspd_smc_handler(uint32_t smc_fid,
+			 u_register_t x1,
+			 u_register_t x2,
+			 u_register_t x3,
+			 u_register_t x4,
 			 void *cookie,
 			 void *handle,
-			 uint64_t flags)
+			 u_register_t flags)
 {
 	cpu_context_t *ns_cpu_context;
 	uint32_t linear_id = plat_my_core_pos(), ns;
@@ -372,7 +375,7 @@ uint64_t tspd_smc_handler(uint32_t smc_fid,
 
 			/*
 			 * TSP has been successfully initialized. Register power
-			 * managemnt hooks with PSCI
+			 * management hooks with PSCI
 			 */
 			psci_register_spd_pm_hook(&tspd_pm);
 
@@ -434,6 +437,7 @@ uint64_t tspd_smc_handler(uint32_t smc_fid,
 		 * context.
 		 */
 		tspd_synchronous_sp_exit(tsp_ctx, x1);
+		break;
 #endif
 	/*
 	 * This function ID is used only by the SP to indicate it has finished
@@ -474,6 +478,7 @@ uint64_t tspd_smc_handler(uint32_t smc_fid,
 		 * return value to the caller
 		 */
 		tspd_synchronous_sp_exit(tsp_ctx, x1);
+		break;
 
 		/*
 		 * Request from non-secure client to perform an
@@ -540,6 +545,19 @@ uint64_t tspd_smc_handler(uint32_t smc_fid,
 				 */
 				enable_intr_rm_local(INTR_TYPE_NS, SECURE);
 #endif
+
+#if EL3_EXCEPTION_HANDLING
+				/*
+				 * With EL3 exception handling, while an SMC is
+				 * being processed, Non-secure interrupts can't
+				 * preempt Secure execution. However, for
+				 * yielding SMCs, we want preemption to happen;
+				 * so explicitly allow NS preemption in this
+				 * case, and supply the preemption return code
+				 * for TSP.
+				 */
+				ehf_allow_ns_preemption(TSP_PREEMPTED);
+#endif
 			}
 
 			cm_el1_sysregs_context_restore(SECURE);
@@ -576,8 +594,8 @@ uint64_t tspd_smc_handler(uint32_t smc_fid,
 
 			SMC_RET3(ns_cpu_context, x1, x2, x3);
 		}
+		assert(0); /* Unreachable */
 
-		break;
 	/*
 	 * Request from the non-secure world to abort a preempted Yielding SMC
 	 * Call.
@@ -646,7 +664,14 @@ uint64_t tspd_smc_handler(uint32_t smc_fid,
 		enable_intr_rm_local(INTR_TYPE_NS, SECURE);
 #endif
 
-
+#if EL3_EXCEPTION_HANDLING
+		/*
+		 * Allow the resumed yielding SMC processing to be preempted by
+		 * Non-secure interrupts. Also, supply the preemption return
+		 * code for TSP.
+		 */
+		ehf_allow_ns_preemption(TSP_PREEMPTED);
+#endif
 
 		/* We just need to return to the preempted point in
 		 * TSP and the execution will resume as normal.

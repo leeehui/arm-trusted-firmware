@@ -1,14 +1,14 @@
 /*
- * Copyright (c) 2015-2016, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
-#ifndef __ARM_MACROS_S__
-#define __ARM_MACROS_S__
+#ifndef ARM_MACROS_S
+#define ARM_MACROS_S
 
-#include <gic_common.h>
-#include <gicv2.h>
-#include <gicv3.h>
+#include <drivers/arm/gic_common.h>
+#include <drivers/arm/gicv2.h>
+#include <drivers/arm/gicv3.h>
 #include <platform_def.h>
 
 .section .rodata.gic_reg_name, "aS"
@@ -22,12 +22,13 @@ icc_regs:
 
 /* Registers common to both GICv2 and GICv3 */
 gicd_pend_reg:
-	.asciz "gicd_ispendr regs (Offsets 0x200 - 0x278)\n"	\
-		" Offset:\t\t\tvalue\n"
+	.asciz "gicd_ispendr regs (Offsets 0x200-0x278)\nOffset\t\t\tValue\n"
 newline:
 	.asciz "\n"
 spacer:
-	.asciz ":\t\t0x"
+	.asciz ":\t\t 0x"
+prefix:
+	.asciz "0x"
 
 	/* ---------------------------------------------
 	 * The below utility macro prints out relevant GIC
@@ -78,7 +79,15 @@ gicd_ispendr_loop:
 	sub	x4, x7, x16
 	cmp	x4, #0x280
 	b.eq	exit_print_gic_regs
-	bl	asm_print_hex
+
+	/* Print "0x" */
+	adr	x4, prefix
+	bl	asm_print_str
+
+	/* Print offset */
+	sub	x4, x7, x16
+	mov	x5, #12
+	bl	asm_print_hex_bits
 
 	adr	x4, spacer
 	bl	asm_print_str
@@ -92,4 +101,4 @@ gicd_ispendr_loop:
 exit_print_gic_regs:
 	.endm
 
-#endif /* __ARM_MACROS_S__ */
+#endif /* ARM_MACROS_S */

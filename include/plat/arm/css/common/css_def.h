@@ -1,16 +1,15 @@
 /*
- * Copyright (c) 2015-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef __CSS_DEF_H__
-#define __CSS_DEF_H__
+#ifndef CSS_DEF_H
+#define CSS_DEF_H
 
-#include <arm_def.h>
-#include <gic_common.h>
-#include <interrupt_props.h>
-#include <tzc400.h>
+#include <common/interrupt_props.h>
+#include <drivers/arm/gic_common.h>
+#include <drivers/arm/tzc400.h>
 
 /*************************************************************************
  * Definitions common to all ARM Compute SubSystems (CSS)
@@ -22,12 +21,18 @@
 #define CSS_DEVICE_BASE			0x20000000
 #define CSS_DEVICE_SIZE			0x0e000000
 
-#define NSRAM_BASE			0x2e000000
-#define NSRAM_SIZE			0x00008000
-
 /* System Security Control Registers */
 #define SSC_REG_BASE			0x2a420000
 #define SSC_GPRETN			(SSC_REG_BASE + 0x030)
+
+/* System ID Registers Unit */
+#define SID_REG_BASE			0x2a4a0000
+#define SID_SYSTEM_ID_OFFSET		0x40
+#define SID_SYSTEM_CFG_OFFSET		0x70
+#define SID_NODE_ID_OFFSET		0x60
+#define SID_CHIP_ID_MASK		0xFF
+#define SID_MULTI_CHIP_MODE_MASK	0x100
+#define SID_MULTI_CHIP_MODE_SHIFT	8
 
 /* The slave_bootsecure controls access to GPU, DMC and CS. */
 #define CSS_NIC400_SLAVE_BOOTSECURE	8
@@ -102,7 +107,15 @@
 #define CSS_MAP_NSRAM			MAP_REGION_FLAT(		\
 						NSRAM_BASE,	\
 						NSRAM_SIZE,	\
-						MT_DEVICE | MT_RW | MT_SECURE)
+						MT_DEVICE | MT_RW | MT_NS)
+
+#if defined(IMAGE_BL2U)
+#define CSS_MAP_SCP_BL2U		MAP_REGION_FLAT(		\
+						SCP_BL2U_BASE,		\
+						SCP_BL2U_LIMIT		\
+							- SCP_BL2U_BASE,\
+						MT_RW_DATA | MT_SECURE)
+#endif
 
 /* Platform ID address */
 #define SSC_VERSION_OFFSET			0x040
@@ -118,6 +131,8 @@
 #define SSC_VERSION_DESIGNER_ID_MASK		0xff
 #define SSC_VERSION_PART_NUM_MASK		0xfff
 
+#define SID_SYSTEM_ID_PART_NUM_MASK		0xfff
+
 /* SSC debug configuration registers */
 #define SSC_DBGCFG_SET		0x14
 #define SSC_DBGCFG_CLR		0x18
@@ -125,7 +140,7 @@
 #define SPIDEN_INT_CLR_SHIFT	6
 #define SPIDEN_SEL_SET_SHIFT	7
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /* SSC_VERSION related accessors */
 
@@ -139,7 +154,7 @@
 		(((val) >> SSC_VERSION_CONFIG_SHIFT) &		\
 		SSC_VERSION_CONFIG_MASK)
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /*************************************************************************
  * Required platform porting definitions common to all
@@ -161,21 +176,18 @@
 /*
  * Load address of SCP_BL2 in CSS platform ports
  * SCP_BL2 is loaded to the same place as BL31 but it shouldn't overwrite BL1
- * rw data.  Once SCP_BL2 is transferred to the SCP, it is discarded and BL31
- * is loaded over the top.
+ * rw data or BL2.  Once SCP_BL2 is transferred to the SCP, it is discarded and
+ * BL31 is loaded over the top.
  */
-#define SCP_BL2_BASE			(BL1_RW_BASE - PLAT_CSS_MAX_SCP_BL2_SIZE)
-#define SCP_BL2_LIMIT			BL1_RW_BASE
+#define SCP_BL2_BASE			(BL2_BASE - PLAT_CSS_MAX_SCP_BL2_SIZE)
+#define SCP_BL2_LIMIT			BL2_BASE
 
-#define SCP_BL2U_BASE			(BL1_RW_BASE - PLAT_CSS_MAX_SCP_BL2U_SIZE)
-#define SCP_BL2U_LIMIT			BL1_RW_BASE
+#define SCP_BL2U_BASE			(BL2_BASE - PLAT_CSS_MAX_SCP_BL2U_SIZE)
+#define SCP_BL2U_LIMIT			BL2_BASE
 #endif /* CSS_LOAD_SCP_IMAGES */
 
 /* Load address of Non-Secure Image for CSS platform ports */
-#define PLAT_ARM_NS_IMAGE_OFFSET	0xE0000000
-
-/* TZC related constants */
-#define PLAT_ARM_TZC_FILTERS		TZC_400_REGION_ATTR_FILTER_BIT_ALL
+#define PLAT_ARM_NS_IMAGE_BASE		U(0xE0000000)
 
 /*
  * Parsing of CPU and Cluster states, as returned by 'Get CSS Power State' SCP
@@ -188,4 +200,4 @@
 #define CSS_CPU_PWR_STATE_OFF		0
 #define CSS_CPU_PWR_STATE(state, n)	(((state) >> (n)) & 1)
 
-#endif /* __CSS_DEF_H__ */
+#endif /* CSS_DEF_H */

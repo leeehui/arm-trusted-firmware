@@ -1,24 +1,27 @@
 /*
- * Copyright (c) 2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2017-2018, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
 #include <assert.h>
-#include <debug.h>
 #include <errno.h>
-#include <firmware_image_package.h>
-#include <io_block.h>
-#include <io_driver.h>
-#include <io_fip.h>
-#include <io_memmap.h>
-#include <io_storage.h>
-#include <mmio.h>
-#include <platform_def.h>
-#include <semihosting.h>	/* For FOPEN_MODE_... */
 #include <string.h>
-#include <ufs.h>
+
+#include <platform_def.h>
+
+#include <arch_helpers.h>
+#include <common/debug.h>
+#include <drivers/ufs.h>
+#include <drivers/io/io_block.h>
+#include <drivers/io/io_driver.h>
+#include <drivers/io/io_fip.h>
+#include <drivers/io/io_memmap.h>
+#include <drivers/io/io_storage.h>
+#include <drivers/partition/partition.h>
+#include <lib/mmio.h>
+#include <lib/semihosting.h>
+#include <tools_share/firmware_image_package.h>
 
 struct plat_io_policy {
 	uintptr_t *dev_handle;
@@ -34,14 +37,12 @@ static int check_fip(const uintptr_t spec);
 size_t ufs_read_lun3_blks(int lba, uintptr_t buf, size_t size);
 size_t ufs_write_lun3_blks(int lba, const uintptr_t buf, size_t size);
 
-static const io_block_spec_t ufs_fip_spec = {
-	.offset		= HIKEY960_FIP_BASE,
-	.length		= HIKEY960_FIP_MAX_SIZE,
-};
+static io_block_spec_t ufs_fip_spec;
 
-static const io_block_spec_t ufs_data_spec = {
+static const io_block_spec_t ufs_gpt_spec = {
 	.offset		= 0,
-	.length		= 256 << 20,
+	.length		= PLAT_PARTITION_BLOCK_SIZE *
+			  (PLAT_PARTITION_MAX_ENTRIES / 4 + 2),
 };
 
 static const io_block_dev_spec_t ufs_dev_spec = {
@@ -55,10 +56,6 @@ static const io_block_dev_spec_t ufs_dev_spec = {
 		.write	= ufs_write_lun3_blks,
 	},
 	.block_size	= UFS_BLOCK_SIZE,
-};
-
-static const io_uuid_spec_t bl2_uuid_spec = {
-	.uuid = UUID_TRUSTED_BOOT_FIRMWARE_BL2,
 };
 
 static const io_uuid_spec_t scp_bl2_uuid_spec = {
@@ -85,16 +82,49 @@ static const io_uuid_spec_t bl33_uuid_spec = {
 	.uuid = UUID_NON_TRUSTED_FIRMWARE_BL33,
 };
 
+#if TRUSTED_BOARD_BOOT
+static const io_uuid_spec_t trusted_key_cert_uuid_spec = {
+	.uuid = UUID_TRUSTED_KEY_CERT,
+};
+
+static const io_uuid_spec_t scp_fw_key_cert_uuid_spec = {
+	.uuid = UUID_SCP_FW_KEY_CERT,
+};
+
+static const io_uuid_spec_t soc_fw_key_cert_uuid_spec = {
+	.uuid = UUID_SOC_FW_KEY_CERT,
+};
+
+static const io_uuid_spec_t tos_fw_key_cert_uuid_spec = {
+	.uuid = UUID_TRUSTED_OS_FW_KEY_CERT,
+};
+
+static const io_uuid_spec_t nt_fw_key_cert_uuid_spec = {
+	.uuid = UUID_NON_TRUSTED_FW_KEY_CERT,
+};
+
+static const io_uuid_spec_t scp_fw_cert_uuid_spec = {
+	.uuid = UUID_SCP_FW_CONTENT_CERT,
+};
+
+static const io_uuid_spec_t soc_fw_cert_uuid_spec = {
+	.uuid = UUID_SOC_FW_CONTENT_CERT,
+};
+
+static const io_uuid_spec_t tos_fw_cert_uuid_spec = {
+	.uuid = UUID_TRUSTED_OS_FW_CONTENT_CERT,
+};
+
+static const io_uuid_spec_t nt_fw_cert_uuid_spec = {
+	.uuid = UUID_NON_TRUSTED_FW_CONTENT_CERT,
+};
+#endif /* TRUSTED_BOARD_BOOT */
+
 static const struct plat_io_policy policies[] = {
 	[FIP_IMAGE_ID] = {
 		&ufs_dev_handle,
 		(uintptr_t)&ufs_fip_spec,
 		check_ufs
-	},
-	[BL2_IMAGE_ID] = {
-		&fip_dev_handle,
-		(uintptr_t)&bl2_uuid_spec,
-		check_fip
 	},
 	[SCP_BL2_IMAGE_ID] = {
 		&fip_dev_handle,
@@ -126,11 +156,58 @@ static const struct plat_io_policy policies[] = {
 		(uintptr_t)&bl33_uuid_spec,
 		check_fip
 	},
-	[BL2U_IMAGE_ID] = {
+#if TRUSTED_BOARD_BOOT
+	[TRUSTED_KEY_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&trusted_key_cert_uuid_spec,
+		check_fip
+	},
+	[SCP_FW_KEY_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&scp_fw_key_cert_uuid_spec,
+		check_fip
+	},
+	[SOC_FW_KEY_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&soc_fw_key_cert_uuid_spec,
+		check_fip
+	},
+	[TRUSTED_OS_FW_KEY_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&tos_fw_key_cert_uuid_spec,
+		check_fip
+	},
+	[NON_TRUSTED_FW_KEY_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&nt_fw_key_cert_uuid_spec,
+		check_fip
+	},
+	[SCP_FW_CONTENT_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&scp_fw_cert_uuid_spec,
+		check_fip
+	},
+	[SOC_FW_CONTENT_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&soc_fw_cert_uuid_spec,
+		check_fip
+	},
+	[TRUSTED_OS_FW_CONTENT_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&tos_fw_cert_uuid_spec,
+		check_fip
+	},
+	[NON_TRUSTED_FW_CONTENT_CERT_ID] = {
+		&fip_dev_handle,
+		(uintptr_t)&nt_fw_cert_uuid_spec,
+		check_fip
+	},
+#endif /* TRUSTED_BOARD_BOOT */
+	[GPT_IMAGE_ID] = {
 		&ufs_dev_handle,
-		(uintptr_t)&ufs_data_spec,
+		(uintptr_t)&ufs_gpt_spec,
 		check_ufs
-	}
+	},
 };
 
 static int check_ufs(const uintptr_t spec)
@@ -183,6 +260,23 @@ void hikey960_io_setup(void)
 
 	/* Ignore improbable errors in release builds */
 	(void)result;
+}
+
+int hikey960_set_fip_addr(unsigned int image_id, const char *name)
+{
+	const partition_entry_t *entry;
+
+	if (ufs_fip_spec.length == 0) {
+		partition_init(GPT_IMAGE_ID);
+		entry = get_partition_entry(name);
+		if (entry == NULL) {
+			ERROR("Could NOT find the %s partition!\n", name);
+			return -ENOENT;
+		}
+		ufs_fip_spec.offset = entry->start;
+		ufs_fip_spec.length = entry->length;
+	}
+	return 0;
 }
 
 /* Return an IO device handle and specification which can be used to access

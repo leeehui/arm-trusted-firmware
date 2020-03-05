@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <pubsub.h>
+#include <lib/el3_runtime/pubsub.h>
 
 /*
  * This file defines a list of pubsub events, declared using
@@ -17,7 +17,14 @@
  */
 REGISTER_PUBSUB_EVENT(psci_cpu_on_finish);
 
-#ifdef AARCH64
+/*
+ * These events are published before/after a CPU has been powered down/up
+ * via the PSCI CPU SUSPEND API.
+ */
+REGISTER_PUBSUB_EVENT(psci_suspend_pwrdown_start);
+REGISTER_PUBSUB_EVENT(psci_suspend_pwrdown_finish);
+
+#ifdef __aarch64__
 /*
  * These events are published by the AArch64 context management framework
  * after the secure context is restored/saved via
@@ -33,4 +40,4 @@ REGISTER_PUBSUB_EVENT(cm_exited_secure_world);
  */
 REGISTER_PUBSUB_EVENT(cm_entering_normal_world);
 REGISTER_PUBSUB_EVENT(cm_exited_normal_world);
-#endif /* AARCH64 */
+#endif /* __aarch64__ */

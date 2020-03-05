@@ -1,18 +1,18 @@
 /*
- * Copyright (c) 2015-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef CERT_H_
-#define CERT_H_
+#ifndef CERT_H
+#define CERT_H
 
 #include <openssl/ossl_typ.h>
 #include <openssl/x509.h>
 #include "ext.h"
 #include "key.h"
 
-#define CERT_MAX_EXT			4
+#define CERT_MAX_EXT			5
 
 /*
  * This structure contains information related to the generation of the
@@ -49,7 +49,6 @@ int cert_init(void);
 cert_t *cert_get_by_opt(const char *opt);
 int cert_add_ext(X509 *issuer, X509 *subject, int nid, char *value);
 int cert_new(
-	int key_alg,
 	int md_alg,
 	cert_t *cert,
 	int days,
@@ -65,4 +64,4 @@ int cert_new(
 extern cert_t *certs;
 extern const unsigned int num_certs;
 
-#endif /* CERT_H_ */
+#endif /* CERT_H */

@@ -1,35 +1,38 @@
 /*
- * Copyright (c) 2015-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <arch_helpers.h>
 #include <assert.h>
-#include <auth_mod.h>
-#include <bl1.h>
-#include <bl_common.h>
-#include <context.h>
-#include <context_mgmt.h>
-#include <debug.h>
 #include <errno.h>
-#include <platform.h>
-#include <platform_def.h>
-#include <smcc_helpers.h>
 #include <string.h>
-#include <utils.h>
+
+#include <platform_def.h>
+
+#include <arch_helpers.h>
+#include <bl1/bl1.h>
+#include <common/bl_common.h>
+#include <common/debug.h>
+#include <context.h>
+#include <drivers/auth/auth_mod.h>
+#include <lib/el3_runtime/context_mgmt.h>
+#include <lib/utils.h>
+#include <plat/common/platform.h>
+#include <smccc_helpers.h>
+
 #include "bl1_private.h"
 
 /*
  * Function declarations.
  */
 static int bl1_fwu_image_copy(unsigned int image_id,
-			uintptr_t image_addr,
+			uintptr_t image_src,
 			unsigned int block_size,
 			unsigned int image_size,
 			unsigned int flags);
 static int bl1_fwu_image_auth(unsigned int image_id,
-			uintptr_t image_addr,
+			uintptr_t image_src,
 			unsigned int image_size,
 			unsigned int flags);
 static int bl1_fwu_image_execute(unsigned int image_id,
@@ -49,17 +52,14 @@ __dead2 static void bl1_fwu_done(void *client_cookie, void *reserved);
  */
 static unsigned int sec_exec_image_id = INVALID_IMAGE_ID;
 
-/* Authentication status of each image. */
-extern unsigned int auth_img_flags[];
-
 /*******************************************************************************
  * Top level handler for servicing FWU SMCs.
  ******************************************************************************/
-register_t bl1_fwu_smc_handler(unsigned int smc_fid,
-			register_t x1,
-			register_t x2,
-			register_t x3,
-			register_t x4,
+u_register_t bl1_fwu_smc_handler(unsigned int smc_fid,
+			u_register_t x1,
+			u_register_t x2,
+			u_register_t x3,
+			u_register_t x4,
 			void *cookie,
 			void *handle,
 			unsigned int flags)
@@ -76,7 +76,7 @@ register_t bl1_fwu_smc_handler(unsigned int smc_fid,
 		SMC_RET1(handle, bl1_fwu_image_execute(x1, &handle, flags));
 
 	case FWU_SMC_IMAGE_RESUME:
-		SMC_RET1(handle, bl1_fwu_image_resume(x1, &handle, flags));
+		SMC_RET1(handle, bl1_fwu_image_resume((register_t)x1, &handle, flags));
 
 	case FWU_SMC_SEC_IMAGE_DONE:
 		SMC_RET1(handle, bl1_fwu_sec_image_done(&handle, flags));
@@ -86,10 +86,9 @@ register_t bl1_fwu_smc_handler(unsigned int smc_fid,
 
 	case FWU_SMC_UPDATE_DONE:
 		bl1_fwu_done((void *)x1, NULL);
-		/* We should never return from bl1_fwu_done() */
 
 	default:
-		assert(0);
+		assert(0); /* Unreachable */
 		break;
 	}
 
@@ -106,7 +105,7 @@ register_t bl1_fwu_smc_handler(unsigned int smc_fid,
 #define FWU_MAX_SIMULTANEOUS_IMAGES	10
 #endif
 
-static int bl1_fwu_loaded_ids[FWU_MAX_SIMULTANEOUS_IMAGES] = {
+static unsigned int bl1_fwu_loaded_ids[FWU_MAX_SIMULTANEOUS_IMAGES] = {
 	[0 ... FWU_MAX_SIMULTANEOUS_IMAGES-1] = INVALID_IMAGE_ID
 };
 
@@ -114,7 +113,7 @@ static int bl1_fwu_loaded_ids[FWU_MAX_SIMULTANEOUS_IMAGES] = {
  * Adds an image_id to the bl1_fwu_loaded_ids array.
  * Returns 0 on success, 1 on error.
  */
-static int bl1_fwu_add_loaded_id(int image_id)
+static int bl1_fwu_add_loaded_id(unsigned int image_id)
 {
 	int i;
 
@@ -139,7 +138,7 @@ static int bl1_fwu_add_loaded_id(int image_id)
  * Removes an image_id from the bl1_fwu_loaded_ids array.
  * Returns 0 on success, 1 on error.
  */
-static int bl1_fwu_remove_loaded_id(int image_id)
+static int bl1_fwu_remove_loaded_id(unsigned int image_id)
 {
 	int i;
 
@@ -158,7 +157,7 @@ static int bl1_fwu_remove_loaded_id(int image_id)
  * This function checks if the specified image overlaps another image already
  * loaded. It returns 0 if there is no overlap, a negative error code otherwise.
  ******************************************************************************/
-static int bl1_fwu_image_check_overlaps(int image_id)
+static int bl1_fwu_image_check_overlaps(unsigned int image_id)
 {
 	const image_desc_t *image_desc, *checked_image_desc;
 	const image_info_t *info, *checked_info;
@@ -290,26 +289,11 @@ static int bl1_fwu_image_copy(unsigned int image_id,
 			return -ENOMEM;
 		}
 
-#if LOAD_IMAGE_V2
 		/* Check that the image size to load is within limit */
 		if (image_size > image_desc->image_info.image_max_size) {
 			WARN("BL1-FWU: Image size out of bounds\n");
 			return -ENOMEM;
 		}
-#else
-		/*
-		 * Check the image will fit into the free trusted RAM after BL1
-		 * load.
-		 */
-		const meminfo_t *mem_layout = bl1_plat_sec_mem_layout();
-		if (!is_mem_free(mem_layout->free_base, mem_layout->free_size,
-					image_desc->image_info.image_base,
-					image_size)) {
-			WARN("BL1-FWU: Copy not allowed due to insufficient"
-			     " resources.\n");
-			return -ENOMEM;
-		}
-#endif
 
 		/* Save the given image size. */
 		image_desc->image_info.image_size = image_size;
@@ -348,6 +332,15 @@ static int bl1_fwu_image_copy(unsigned int image_id,
 	if (bl1_fwu_add_loaded_id(image_id)) {
 		WARN("BL1-FWU: Too many images loaded at the same time.\n");
 		return -ENOMEM;
+	}
+
+	/* Allow the platform to handle pre-image load before copying */
+	if (image_desc->state == IMAGE_STATE_RESET) {
+		if (bl1_plat_handle_pre_image_load(image_id) != 0) {
+			ERROR("BL1-FWU: Failure in pre-image load of image id %d\n",
+					image_id);
+			return -EPERM;
+		}
 	}
 
 	/* Everything looks sane. Go ahead and copy the block of data. */
@@ -474,11 +467,23 @@ static int bl1_fwu_image_auth(unsigned int image_id,
 	/* Indicate that image is in authenticated state. */
 	image_desc->state = IMAGE_STATE_AUTHENTICATED;
 
+	/* Allow the platform to handle post-image load */
+	result = bl1_plat_handle_post_image_load(image_id);
+	if (result != 0) {
+		ERROR("BL1-FWU: Failure %d in post-image load of image id %d\n",
+				result, image_id);
+		/*
+		 * Panic here as the platform handling of post-image load is
+		 * not correct.
+		 */
+		plat_error_handler(result);
+	}
+
 	/*
 	 * Flush image_info to memory so that other
 	 * secure world images can see changes.
 	 */
-	flush_dcache_range((unsigned long)&image_desc->image_info,
+	flush_dcache_range((uintptr_t)&image_desc->image_info,
 		sizeof(image_info_t));
 
 	INFO("BL1-FWU: Authentication was successful\n");
@@ -515,7 +520,7 @@ static int bl1_fwu_image_execute(unsigned int image_id,
 
 	INFO("BL1-FWU: Executing Secure image\n");
 
-#ifdef AARCH64
+#ifdef __aarch64__
 	/* Save NS-EL1 system registers. */
 	cm_el1_sysregs_context_save(NON_SECURE);
 #endif
@@ -526,7 +531,7 @@ static int bl1_fwu_image_execute(unsigned int image_id,
 	/* Update the secure image id. */
 	sec_exec_image_id = image_id;
 
-#ifdef AARCH64
+#ifdef __aarch64__
 	*handle = cm_get_context(SECURE);
 #else
 	*handle = smc_get_ctx(SECURE);
@@ -579,7 +584,7 @@ static register_t bl1_fwu_image_resume(register_t image_param,
 	INFO("BL1-FWU: Resuming %s world context\n",
 		(resume_sec_state == SECURE) ? "secure" : "normal");
 
-#ifdef AARCH64
+#ifdef __aarch64__
 	/* Save the EL1 system registers of calling world. */
 	cm_el1_sysregs_context_save(caller_sec_state);
 
@@ -636,7 +641,7 @@ static int bl1_fwu_sec_image_done(void **handle, unsigned int flags)
 	sec_exec_image_id = INVALID_IMAGE_ID;
 
 	INFO("BL1-FWU: Resuming Normal world context\n");
-#ifdef AARCH64
+#ifdef __aarch64__
 	/*
 	 * Secure world is done so no need to save the context.
 	 * Just restore the Non-Secure context.
@@ -725,7 +730,8 @@ static int bl1_fwu_image_reset(unsigned int image_id, unsigned int flags)
 
 	case IMAGE_STATE_EXECUTED:
 	default:
-		assert(0);
+		assert(0); /* Unreachable */
+		break;
 	}
 
 	return 0;

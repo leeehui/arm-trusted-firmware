@@ -1,25 +1,22 @@
 /*
- * Copyright (c) 2016-2017, ARM Limited and Contributors. All rights reserved.
+ * Copyright (c) 2016-2019, ARM Limited and Contributors. All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#ifndef __UTILS_H__
-#define __UTILS_H__
-
-#if !ERROR_DEPRECATED
-#include <utils_def.h>
-#endif
+#ifndef UTILS_H
+#define UTILS_H
 
 /*
  * C code should be put in this part of the header to avoid breaking ASM files
  * or linker scripts including it.
  */
-#if !(defined(__LINKER__) || defined(__ASSEMBLY__))
+#if !(defined(__LINKER__) || defined(__ASSEMBLER__))
 
-#include <types.h>
+#include <stddef.h>
+#include <stdint.h>
 
-typedef struct mem_region_t {
+typedef struct mem_region {
 	uintptr_t base;
 	size_t nbytes;
 } mem_region_t;
@@ -29,6 +26,18 @@ typedef struct mem_region_t {
  */
 void clear_mem_regions(mem_region_t *tbl, size_t nregions);
 
+/*
+ * zero_normalmem all the regions defined in region. It dynamically
+ * maps chunks of 'chunk_size' in 'va' virtual address and clears them.
+ * For this reason memory regions must be multiple of chunk_size and
+ * must be aligned to it as well. chunk_size and va can be selected
+ * in a way that they minimize the number of entries used in the
+ * translation tables.
+ */
+void clear_map_dyn_mem_regions(struct mem_region *regions,
+			       size_t nregions,
+			       uintptr_t va,
+			       size_t chunk);
 
 /*
  * checks that a region (addr + nbytes-1) of memory is totally covered by
@@ -59,6 +68,27 @@ void zero_normalmem(void *mem, u_register_t length);
  *       zeroing.
  */
 void zeromem(void *mem, u_register_t length);
-#endif /* !(defined(__LINKER__) || defined(__ASSEMBLY__)) */
 
-#endif /* __UTILS_H__ */
+/*
+ * Utility function to return the address of a symbol. By default, the
+ * compiler generates adr/adrp instruction pair to return the reference
+ * to the symbol and this utility is used to override this compiler
+ * generated to code to use `ldr` instruction.
+ *
+ * This helps when Position Independent Executable needs to reference a symbol
+ * which is constant and does not depend on the execute address of the binary.
+ */
+#define DEFINE_LOAD_SYM_ADDR(_name)		\
+static inline u_register_t load_addr_## _name(void)			\
+{									\
+	u_register_t v;							\
+	__asm__ volatile ("ldr %0, =" #_name : "=r" (v) : "X" (#_name));\
+	return v;							\
+}
+
+/* Helper to invoke the function defined by DEFINE_LOAD_SYM_ADDR() */
+#define LOAD_ADDR_OF(_name)	(typeof(_name) *) load_addr_## _name()
+
+#endif /* !(defined(__LINKER__) || defined(__ASSEMBLER__)) */
+
+#endif /* UTILS_H */
